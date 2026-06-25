@@ -21,6 +21,23 @@ replication, and recovery from process and node failure.
 > script** demonstrate failover; **Kubernetes** manifests are a CI-validated
 > reference. See [docs/DEPLOY.md](docs/DEPLOY.md).
 
+## Engineering highlights
+
+- **Leader election from first principles** — terms, randomized timeouts,
+  majority voting, and lease renewal in a standalone, unit-tested
+  [`internal/cluster`](internal/cluster) package; covered by race-clean
+  election / failover / no-majority tests.
+- **Correct under failure** — at-least-once idempotent execution, fenced stale
+  leaders, dead-worker and expired-lease requeue, and checkpoint recovery of
+  orphaned jobs — proven by a Docker **chaos test that kills the leader under
+  load** and watches a follower finish the work.
+- **Honest engineering** — it implements the tractable half of consensus
+  (election) and *documents what it deliberately does not do* (Raft's replicated
+  log) and what can be lost on failover, instead of overclaiming.
+- **End-to-end Go infrastructure** — gRPC + Protobuf, embedded BoltDB,
+  Prometheus metrics, zap structured logging, a `schedulerctl` CLI, a Docker
+  Compose cluster, and CI-validated Kubernetes manifests.
+
 ## What this is
 
 `distsched` accepts jobs over gRPC, persists them durably, and dispatches them
@@ -118,22 +135,23 @@ make test               # go test -race ./...
 make proto              # regenerate code from .proto (only if you edit protos)
 ```
 
-Run a scheduler and a worker locally:
+Run a scheduler, a worker, and submit a job locally:
 
 ```bash
 # terminal 1 — scheduler with a BoltDB store under ./data
-./bin/scheduler --listen :7070 --data-dir ./data --log-level debug
+./bin/scheduler --listen :7070 --data-dir ./data
 
-# terminal 2 — a worker that registers and heartbeats
-./bin/worker --scheduler localhost:7070 --capacity 8 --heartbeat-interval 2s
+# terminal 2 — a worker that follows the leader and executes tasks
+./bin/worker --schedulers localhost:7070 --capacity 8
+
+# terminal 3 — submit work and watch it run
+./bin/schedulerctl --addr localhost:7070 submit --command echo --arg hello --priority 5
+./bin/schedulerctl --addr localhost:7070 list
 ```
 
-The worker registers, heartbeats, and pulls tasks to execute as subprocesses,
-reporting each result. The scheduler persists every job to BoltDB, dispatches by
-priority, retries failures with exponential backoff, and dead-letters jobs that
-exhaust their retries. Until the `schedulerctl` CLI lands (Milestone 7), submit
-jobs via the `JobService` gRPC API (exercised end-to-end, including the real
-worker agent, in `internal/scheduler/dispatch_test.go`).
+The scheduler persists every job to BoltDB, dispatches by priority, retries
+failures with exponential backoff, and dead-letters jobs that exhaust their
+retries; the worker pulls tasks and runs them as subprocesses.
 
 Run a 3-node cluster with leader election and failover:
 
@@ -162,6 +180,22 @@ schedulerctl --addr localhost:7101 submit --command echo --cron "@every 30s"
 schedulerctl --addr localhost:7101 list
 curl -s localhost:9090/metrics | grep distsched_   # Prometheus metrics
 ```
+
+### The demo cluster + chaos test (Docker)
+
+Bring up a real cluster (3 schedulers + 3 workers + Prometheus) and prove
+failover by killing the leader under load:
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml up --build   # start the cluster
+./scripts/chaos.sh                                               # kill the leader; a follower takes over
+```
+
+The chaos script submits jobs, kills the leader container, waits for a new leader
+at a higher term, submits more jobs, and confirms everything completes — then
+restarts the killed node to show it rejoin as a follower. See
+[docs/DEPLOY.md](docs/DEPLOY.md) for what runs versus what is a validated
+reference.
 
 ## Roadmap
 
