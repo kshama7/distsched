@@ -8,10 +8,11 @@ replication, and recovery from process and node failure.
 
 > **Status: under active construction.** This repo is being built in 8
 > milestones (see [Roadmap](#roadmap)). Each milestone leaves `main` in a
-> runnable, tested state. **Milestones 1–2 are complete**: the scheduler runs as
-> a live gRPC server with BoltDB persistence and a priority queue, accepts jobs,
-> and tracks workers via registration + heartbeat. Task dispatch and execution
-> arrive in Milestone 3.
+> runnable, tested state. **Milestones 1–3 are complete**: the scheduler runs as
+> a live gRPC server with BoltDB persistence and a priority queue, dispatches
+> tasks to workers that execute them as subprocesses, and handles failures with
+> exponential-backoff retry and a dead-letter queue. Leader election and
+> clustering arrive in Milestone 4.
 
 ## What this is
 
@@ -112,10 +113,12 @@ Run a scheduler and a worker locally:
 ./bin/worker --scheduler localhost:7070 --capacity 8 --heartbeat-interval 2s
 ```
 
-The scheduler logs worker registration and heartbeats, persists every job to
-BoltDB, and rebuilds its priority queue from that store on restart. Until the
-`schedulerctl` CLI lands (Milestone 7), submit jobs via the `JobService` gRPC
-API (exercised end-to-end in `internal/scheduler/server_test.go`).
+The worker registers, heartbeats, and pulls tasks to execute as subprocesses,
+reporting each result. The scheduler persists every job to BoltDB, dispatches by
+priority, retries failures with exponential backoff, and dead-letters jobs that
+exhaust their retries. Until the `schedulerctl` CLI lands (Milestone 7), submit
+jobs via the `JobService` gRPC API (exercised end-to-end, including the real
+worker agent, in `internal/scheduler/dispatch_test.go`).
 
 ## Roadmap
 
@@ -123,7 +126,7 @@ API (exercised end-to-end in `internal/scheduler/server_test.go`).
 | -- | ------------------------------------------------------------------- | ------ |
 | 1  | Repo scaffold + proto definitions (Job / Worker / Scheduler)        | ✅ done |
 | 2  | Single scheduler: BoltDB persistence, priority queue, heartbeats    | ✅ done |
-| 3  | Multi-worker: assignment, complete/failed, backoff retry, dead-letter | ⏳   |
+| 3  | Multi-worker: assignment, complete/failed, backoff retry, dead-letter | ✅ done |
 | 4  | Multi-scheduler: lease election, metadata replication, failover     | ⏳     |
 | 5  | Failure recovery: missed-heartbeat requeue, idempotency, checkpoint | ⏳     |
 | 6  | DAG dependencies + delayed/cron jobs                                | ⏳     |

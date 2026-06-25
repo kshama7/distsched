@@ -21,8 +21,9 @@ func main() {
 		showVersion = flag.Bool("version", false, "print version and exit")
 		scheduler   = flag.String("scheduler", "localhost:7070", "scheduler gRPC address")
 		advertise   = flag.String("advertise", "", "address this worker advertises (informational)")
-		capacity    = flag.Int("capacity", 4, "max concurrent tasks")
-		hbInterval  = flag.Duration("heartbeat-interval", 5*time.Second, "heartbeat interval")
+		capacity     = flag.Int("capacity", 4, "max concurrent tasks")
+		hbInterval   = flag.Duration("heartbeat-interval", 5*time.Second, "heartbeat interval")
+		pollInterval = flag.Duration("poll-interval", time.Second, "task poll interval")
 		logLevel    = flag.String("log-level", "info", "log level (debug|info|warn|error)")
 	)
 	flag.Parse()
@@ -39,6 +40,7 @@ func main() {
 		Advertise:         *advertise,
 		Capacity:          int32(*capacity),
 		HeartbeatInterval: *hbInterval,
+		PollInterval:      *pollInterval,
 	}, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

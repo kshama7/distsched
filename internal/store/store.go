@@ -19,9 +19,10 @@ import (
 var ErrNotFound = errors.New("not found")
 
 var (
-	bucketJobs    = []byte("jobs")
-	bucketWorkers = []byte("workers")
-	bucketMeta    = []byte("meta")
+	bucketJobs       = []byte("jobs")
+	bucketWorkers    = []byte("workers")
+	bucketDeadLetter = []byte("dead_letter")
+	bucketMeta       = []byte("meta")
 )
 
 // Store wraps a BoltDB database.
@@ -37,7 +38,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open bolt %q: %w", path, err)
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bucketJobs, bucketWorkers, bucketMeta} {
+		for _, b := range [][]byte{bucketJobs, bucketWorkers, bucketDeadLetter, bucketMeta} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return fmt.Errorf("create bucket %q: %w", b, err)
 			}
@@ -159,4 +160,46 @@ func (s *Store) DeleteWorker(id string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketWorkers).Delete([]byte(id))
 	})
+}
+
+// PutDeadLetter records a job that exhausted its retries. The job also remains
+// in the jobs bucket in the FAILED state; the dead-letter bucket is a dedicated
+// index for operators to inspect failures.
+func (s *Store) PutDeadLetter(job *distschedv1.Job) error {
+	data, err := proto.Marshal(job)
+	if err != nil {
+		return fmt.Errorf("marshal dead-letter job %q: %w", job.GetId(), err)
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketDeadLetter).Put([]byte(job.GetId()), data)
+	})
+}
+
+// ListDeadLetter returns all dead-lettered jobs.
+func (s *Store) ListDeadLetter() ([]*distschedv1.Job, error) {
+	var jobs []*distschedv1.Job
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketDeadLetter).ForEach(func(_, v []byte) error {
+			job := &distschedv1.Job{}
+			if err := proto.Unmarshal(v, job); err != nil {
+				return err
+			}
+			jobs = append(jobs, job)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
+// CountDeadLetter returns the number of dead-lettered jobs.
+func (s *Store) CountDeadLetter() (int, error) {
+	n := 0
+	err := s.db.View(func(tx *bolt.Tx) error {
+		n = tx.Bucket(bucketDeadLetter).Stats().KeyN
+		return nil
+	})
+	return n, err
 }

@@ -45,9 +45,9 @@ func (s *Server) RegisterWorker(_ context.Context, req *distschedv1.RegisterWork
 // re-register via ok=false so a worker that outlived a scheduler restart with
 // an empty store recovers cleanly.
 func (s *Server) Heartbeat(_ context.Context, req *distschedv1.HeartbeatRequest) (*distschedv1.HeartbeatResponse, error) {
-	s.mu.Lock()
+	s.workersMu.Lock()
 	w, known := s.workers[req.GetWorkerId()]
-	s.mu.Unlock()
+	s.workersMu.Unlock()
 	if !known {
 		return &distschedv1.HeartbeatResponse{Ok: false, LeaderAddress: s.cfg.ListenAddr}, nil
 	}
@@ -62,25 +62,22 @@ func (s *Server) Heartbeat(_ context.Context, req *distschedv1.HeartbeatRequest)
 	return &distschedv1.HeartbeatResponse{Ok: true}, nil
 }
 
-// PollTask returns no work in Milestone 2; task dispatch arrives in Milestone 3.
-func (s *Server) PollTask(_ context.Context, _ *distschedv1.PollTaskRequest) (*distschedv1.PollTaskResponse, error) {
-	return &distschedv1.PollTaskResponse{}, nil
-}
-
-// ReportTask acknowledges a result. Result handling (retry/dead-letter) arrives
-// in Milestone 3.
-func (s *Server) ReportTask(_ context.Context, _ *distschedv1.ReportTaskRequest) (*distschedv1.ReportTaskResponse, error) {
-	return &distschedv1.ReportTaskResponse{Ack: true}, nil
-}
-
 // persistWorker writes the worker to the store and updates the in-memory cache
 // under lock.
 func (s *Server) persistWorker(w *distschedv1.WorkerInfo) error {
 	if err := s.store.PutWorker(w); err != nil {
 		return err
 	}
-	s.mu.Lock()
+	s.workersMu.Lock()
 	s.workers[w.GetId()] = w
-	s.mu.Unlock()
+	s.workersMu.Unlock()
 	return nil
+}
+
+// workerKnown reports whether a worker ID is currently registered.
+func (s *Server) workerKnown(id string) bool {
+	s.workersMu.Lock()
+	defer s.workersMu.Unlock()
+	_, ok := s.workers[id]
+	return ok
 }
