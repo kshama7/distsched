@@ -127,11 +127,20 @@ One mode, implemented fully:
 
 - Workers **register**, then **poll** for tasks (pull model) and **report**
   terminal results. Pull avoids needing inbound connectivity to workers.
-- Workers **heartbeat** on a fixed interval. The leader marks a worker
-  `SUSPECT` after one missed interval and `DEAD` after the eviction threshold,
-  at which point its in-flight tasks are requeued (Milestone 5).
+- Workers **heartbeat** on a fixed interval. A leader-side reaper marks a worker
+  `SUSPECT` at half the heartbeat timeout and `DEAD` past it, then **requeues**
+  its in-flight tasks (treating each as a failed attempt, so it retries with
+  backoff or dead-letters once exhausted).
 - Each dispatched attempt carries a **lease deadline**; if no terminal report
-  arrives by then, the attempt is assumed lost and requeued.
+  arrives by then, the reaper requeues the attempt — covering a worker that
+  vanished or stalled without being declared dead yet.
+- A late report for a requeued `task_id` finds no lease and is harmlessly
+  ignored; workers also suppress re-execution of a recently completed `task_id`.
+  This is the **idempotent, at-least-once** contract.
+- **Checkpoint recovery:** a job left `RUNNING` by a crashed or superseded leader
+  holds no lease on the node that takes over, so when a node assumes leadership
+  it reclaims every `RUNNING` job (rebuilding the queue from BoltDB) and retries
+  the lost attempt.
 
 ## Failure model — what we defend against
 

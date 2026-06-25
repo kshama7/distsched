@@ -52,6 +52,9 @@ type Config struct {
 	// ElectionTimeoutMin/Max bound the randomized election timeout.
 	ElectionTimeoutMin time.Duration
 	ElectionTimeoutMax time.Duration
+	// ReaperInterval is how often the leader scans for dead workers and expired
+	// leases to requeue their tasks.
+	ReaperInterval time.Duration
 }
 
 func (c *Config) withDefaults() {
@@ -78,6 +81,9 @@ func (c *Config) withDefaults() {
 	}
 	if c.ElectionTimeoutMax == 0 {
 		c.ElectionTimeoutMax = 1600 * time.Millisecond
+	}
+	if c.ReaperInterval == 0 {
+		c.ReaperInterval = 3 * time.Second
 	}
 	if len(c.Members) == 0 {
 		c.Members = []Member{{ID: c.NodeID, Address: c.ListenAddr}}
@@ -179,6 +185,7 @@ func New(cfg Config, log *slog.Logger) (*Server, error) {
 	s.bgCancel = cancel
 	s.node.Start(bgCtx) // single-node: becomes leader + fires onBecomeLeader synchronously
 	go s.replicationLoop(bgCtx)
+	go s.reaperLoop(bgCtx)
 	return s, nil
 }
 
@@ -230,21 +237,29 @@ func (s *Server) rebuildSchedulingState() {
 		return
 	}
 	now := time.Now()
-	var requeued, delayed int
+	var requeued, delayed, orphaned int
 	for _, j := range jobs {
-		if j.GetState() != distschedv1.JobState_JOB_STATE_QUEUED {
-			continue
-		}
-		at := j.GetScheduledAt().AsTime()
-		if j.GetScheduledAt() == nil || !at.After(now) {
-			s.queue.Push(j.GetId(), j.GetPriority(), j.GetCreatedAt().AsTime())
-			requeued++
-		} else {
-			s.armEnqueue(j.GetId(), at.Sub(now))
-			delayed++
+		switch j.GetState() {
+		case distschedv1.JobState_JOB_STATE_QUEUED:
+			at := j.GetScheduledAt().AsTime()
+			if j.GetScheduledAt() == nil || !at.After(now) {
+				s.queue.Push(j.GetId(), j.GetPriority(), j.GetCreatedAt().AsTime())
+				requeued++
+			} else {
+				s.armEnqueue(j.GetId(), at.Sub(now))
+				delayed++
+			}
+		case distschedv1.JobState_JOB_STATE_RUNNING:
+			// Checkpoint recovery: a job left RUNNING was orphaned by a crashed or
+			// superseded leader (this node holds no lease for it). Treat the lost
+			// attempt as a failure so it is retried (or dead-lettered if exhausted).
+			if err := s.handleFailure(j, "reclaimed orphaned task after leadership change", now); err != nil {
+				s.log.Error("reclaim orphaned job", "job_id", j.GetId(), "err", err)
+			}
+			orphaned++
 		}
 	}
-	s.log.Info("scheduling state rebuilt", "requeued", requeued, "delayed", delayed)
+	s.log.Info("scheduling state rebuilt", "requeued", requeued, "delayed", delayed, "orphaned_reclaimed", orphaned)
 }
 
 // clearSchedulingState empties the queue, stops timers, and drops leases.

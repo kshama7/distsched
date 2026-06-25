@@ -21,6 +21,10 @@ import (
 // drainTimeout bounds how long Run waits for in-flight tasks on shutdown.
 const drainTimeout = 30 * time.Second
 
+// doneRetention is how long a finished task_id is remembered to suppress
+// duplicate delivery of the same attempt.
+const doneRetention = 10 * time.Minute
+
 // Config configures a worker agent.
 type Config struct {
 	// Schedulers is the seed list of scheduler addresses used to discover the
@@ -62,14 +66,20 @@ type Agent struct {
 	workerID   string
 
 	mu      sync.Mutex
-	running map[string]struct{} // task_id set
+	running map[string]struct{}  // task_id set, currently executing
+	done    map[string]time.Time // recently finished task_ids -> completion time
 	wg      sync.WaitGroup
 }
 
 // New constructs an Agent.
 func New(cfg Config, log *slog.Logger) *Agent {
 	cfg.withDefaults()
-	return &Agent{cfg: cfg, log: log, running: make(map[string]struct{})}
+	return &Agent{
+		cfg:     cfg,
+		log:     log,
+		running: make(map[string]struct{}),
+		done:    make(map[string]time.Time),
+	}
 }
 
 // Run discovers the leader, registers, then heartbeats and polls for work until
@@ -355,12 +365,17 @@ func (a *Agent) runningTaskIDs() []string {
 	return out
 }
 
-// tryStart claims a slot for taskID, returning false if already running or at
-// capacity.
+// tryStart claims a slot for taskID. It returns false if the task is already
+// running, was recently completed (idempotent suppression of duplicate
+// delivery), or the worker is at capacity.
 func (a *Agent) tryStart(taskID string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if _, ok := a.running[taskID]; ok {
+		return false
+	}
+	if _, ok := a.done[taskID]; ok {
+		a.log.Debug("suppressing duplicate task delivery", "task_id", taskID)
 		return false
 	}
 	if len(a.running) >= int(a.cfg.Capacity) {
@@ -373,5 +388,13 @@ func (a *Agent) tryStart(taskID string) bool {
 func (a *Agent) finish(taskID string) {
 	a.mu.Lock()
 	delete(a.running, taskID)
+	now := time.Now()
+	a.done[taskID] = now
+	// Opportunistically prune stale done entries.
+	for id, t := range a.done {
+		if now.Sub(t) > doneRetention {
+			delete(a.done, id)
+		}
+	}
 	a.mu.Unlock()
 }

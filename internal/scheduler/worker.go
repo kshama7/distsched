@@ -5,6 +5,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	distschedv1 "github.com/kshama7/distsched/gen/go/distsched/v1"
@@ -52,12 +53,15 @@ func (s *Server) Heartbeat(_ context.Context, req *distschedv1.HeartbeatRequest)
 		return nil, err
 	}
 	s.workersMu.Lock()
-	w, known := s.workers[req.GetWorkerId()]
+	cur, known := s.workers[req.GetWorkerId()]
 	s.workersMu.Unlock()
 	if !known {
 		return &distschedv1.HeartbeatResponse{Ok: false, LeaderAddress: s.selfAddr}, nil
 	}
 
+	// Clone before mutating: the worker cache pointer is read concurrently by the
+	// liveness reaper, so we publish a fresh value rather than mutate in place.
+	w := proto.Clone(cur).(*distschedv1.WorkerInfo)
 	w.State = distschedv1.WorkerState_WORKER_STATE_ALIVE
 	w.LastHeartbeat = timestamppb.Now()
 	w.RunningTasks = int32(len(req.GetRunningTaskIds()))
