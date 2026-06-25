@@ -34,6 +34,17 @@ message LeaseInfo {
   google.protobuf.Timestamp expires_at = 4;
 }
 
+message RequestVoteRequest {
+  string candidate_id = 1;
+  int64 term = 2;
+}
+
+message RequestVoteResponse {
+  bool vote_granted = 1;
+  // term lets a candidate discover it is behind and step down.
+  int64 term = 2;
+}
+
 message GetClusterStatusRequest {}
 
 message GetClusterStatusResponse {
@@ -68,10 +79,15 @@ message ReplicateResponse {
 }
 
 // SchedulerService is the scheduler<->scheduler cluster plane:
+//   - RequestVote drives lease-based leader election (terms + majority vote).
+//   - Replicate doubles as the leader's heartbeat (asserting leadership and
+//     resetting follower election timers) and ships the leader's metadata
+//     mutations to followers so a follower can take over with warm state on
+//     failover. Entries are applied eagerly, not quorum-committed: this is
+//     deliberately NOT a Raft consensus log. See docs/DESIGN.md.
 //   - GetClusterStatus powers `schedulerctl status` and is served by any node.
-//   - Replicate ships the leader's committed mutations to followers so a
-//     follower can take over with warm state on failover (Milestone 4).
 service SchedulerService {
-  rpc GetClusterStatus(GetClusterStatusRequest) returns (GetClusterStatusResponse);
+  rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse);
   rpc Replicate(ReplicateRequest) returns (ReplicateResponse);
+  rpc GetClusterStatus(GetClusterStatusRequest) returns (GetClusterStatusResponse);
 }

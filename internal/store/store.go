@@ -5,6 +5,7 @@
 package store
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"time"
@@ -202,4 +203,39 @@ func (s *Store) CountDeadLetter() (int, error) {
 		return nil
 	})
 	return n, err
+}
+
+var (
+	metaTerm     = []byte("election_term")
+	metaVotedFor = []byte("election_voted_for")
+)
+
+// SaveElectionState durably records the current term and vote. Leader election
+// must not lose these across a restart, or two leaders could be elected for one
+// term.
+func (s *Store) SaveElectionState(term int64, votedFor string) error {
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], uint64(term))
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketMeta)
+		if err := b.Put(metaTerm, buf[:]); err != nil {
+			return err
+		}
+		return b.Put(metaVotedFor, []byte(votedFor))
+	})
+}
+
+// LoadElectionState returns the persisted term and vote (0, "" if never set).
+func (s *Store) LoadElectionState() (term int64, votedFor string, err error) {
+	err = s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketMeta)
+		if v := b.Get(metaTerm); v != nil {
+			term = int64(binary.BigEndian.Uint64(v))
+		}
+		if v := b.Get(metaVotedFor); v != nil {
+			votedFor = string(v)
+		}
+		return nil
+	})
+	return term, votedFor, err
 }

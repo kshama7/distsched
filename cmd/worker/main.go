@@ -1,5 +1,5 @@
-// Command worker runs a distsched worker node: it registers with a scheduler
-// and heartbeats. Task execution arrives in Milestone 3.
+// Command worker runs a distsched worker node: it discovers and follows the
+// cluster leader, registers, heartbeats, and executes tasks.
 package main
 
 import (
@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,13 +19,13 @@ import (
 
 func main() {
 	var (
-		showVersion = flag.Bool("version", false, "print version and exit")
-		scheduler   = flag.String("scheduler", "localhost:7070", "scheduler gRPC address")
-		advertise   = flag.String("advertise", "", "address this worker advertises (informational)")
+		showVersion  = flag.Bool("version", false, "print version and exit")
+		schedulers   = flag.String("schedulers", "localhost:7070", "comma-separated scheduler addresses (seed list for leader discovery)")
+		advertise    = flag.String("advertise", "", "address this worker advertises (informational)")
 		capacity     = flag.Int("capacity", 4, "max concurrent tasks")
 		hbInterval   = flag.Duration("heartbeat-interval", 5*time.Second, "heartbeat interval")
 		pollInterval = flag.Duration("poll-interval", time.Second, "task poll interval")
-		logLevel    = flag.String("log-level", "info", "log level (debug|info|warn|error)")
+		logLevel     = flag.String("log-level", "info", "log level (debug|info|warn|error)")
 	)
 	flag.Parse()
 
@@ -35,8 +36,15 @@ func main() {
 
 	log := logging.New(*logLevel)
 
+	var seeds []string
+	for _, s := range strings.Split(*schedulers, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			seeds = append(seeds, s)
+		}
+	}
+
 	agent := worker.New(worker.Config{
-		SchedulerAddr:     *scheduler,
+		Schedulers:        seeds,
 		Advertise:         *advertise,
 		Capacity:          int32(*capacity),
 		HeartbeatInterval: *hbInterval,

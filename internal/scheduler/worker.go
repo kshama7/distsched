@@ -14,6 +14,9 @@ import (
 // RegisterWorker records a worker and returns its assigned ID. A worker may
 // supply its own ID to re-register after a restart; otherwise one is assigned.
 func (s *Server) RegisterWorker(_ context.Context, req *distschedv1.RegisterWorkerRequest) (*distschedv1.RegisterWorkerResponse, error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
 	w := req.GetWorker()
 	if w == nil {
 		return nil, status.Error(codes.InvalidArgument, "worker is required")
@@ -28,7 +31,7 @@ func (s *Server) RegisterWorker(_ context.Context, req *distschedv1.RegisterWork
 	w.LastHeartbeat = timestamppb.Now()
 	w.RunningTasks = 0
 
-	if err := s.persistWorker(w); err != nil {
+	if err := s.putWorker(w); err != nil {
 		return nil, status.Errorf(codes.Internal, "persist worker: %v", err)
 	}
 	s.log.Info("worker registered",
@@ -37,7 +40,7 @@ func (s *Server) RegisterWorker(_ context.Context, req *distschedv1.RegisterWork
 		"capacity", w.GetCapacity())
 	return &distschedv1.RegisterWorkerResponse{
 		WorkerId:      w.GetId(),
-		LeaderAddress: s.cfg.ListenAddr,
+		LeaderAddress: s.selfAddr,
 	}, nil
 }
 
@@ -45,33 +48,24 @@ func (s *Server) RegisterWorker(_ context.Context, req *distschedv1.RegisterWork
 // re-register via ok=false so a worker that outlived a scheduler restart with
 // an empty store recovers cleanly.
 func (s *Server) Heartbeat(_ context.Context, req *distschedv1.HeartbeatRequest) (*distschedv1.HeartbeatResponse, error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
 	s.workersMu.Lock()
 	w, known := s.workers[req.GetWorkerId()]
 	s.workersMu.Unlock()
 	if !known {
-		return &distschedv1.HeartbeatResponse{Ok: false, LeaderAddress: s.cfg.ListenAddr}, nil
+		return &distschedv1.HeartbeatResponse{Ok: false, LeaderAddress: s.selfAddr}, nil
 	}
 
 	w.State = distschedv1.WorkerState_WORKER_STATE_ALIVE
 	w.LastHeartbeat = timestamppb.Now()
 	w.RunningTasks = int32(len(req.GetRunningTaskIds()))
-	if err := s.persistWorker(w); err != nil {
+	if err := s.putWorker(w); err != nil {
 		return nil, status.Errorf(codes.Internal, "persist heartbeat: %v", err)
 	}
 	s.log.Debug("heartbeat", "worker_id", w.GetId(), "running_tasks", w.GetRunningTasks())
 	return &distschedv1.HeartbeatResponse{Ok: true}, nil
-}
-
-// persistWorker writes the worker to the store and updates the in-memory cache
-// under lock.
-func (s *Server) persistWorker(w *distschedv1.WorkerInfo) error {
-	if err := s.store.PutWorker(w); err != nil {
-		return err
-	}
-	s.workersMu.Lock()
-	s.workers[w.GetId()] = w
-	s.workersMu.Unlock()
-	return nil
 }
 
 // workerKnown reports whether a worker ID is currently registered.

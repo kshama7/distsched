@@ -125,3 +125,12 @@ func (q *PriorityQueue) Len() int {
 	defer q.mu.Unlock()
 	return q.h.Len()
 }
+
+// Clear removes all queued jobs. Used when a node steps down from leadership and
+// must stop dispatching.
+func (q *PriorityQueue) Clear() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.h = nil
+	q.byID = make(map[string]*item)
+}

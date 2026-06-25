@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,6 +24,7 @@ func main() {
 		nodeID      = flag.String("node-id", "scheduler-1", "scheduler node ID")
 		listen      = flag.String("listen", ":7070", "gRPC listen address")
 		dataDir     = flag.String("data-dir", "./data", "directory for the BoltDB store")
+		peers       = flag.String("peers", "", "cluster membership as id=addr,... (including self); empty for single-node")
 		hbTimeout   = flag.Duration("heartbeat-timeout", 15*time.Second, "worker liveness timeout")
 		logLevel    = flag.String("log-level", "info", "log level (debug|info|warn|error)")
 	)
@@ -35,6 +37,12 @@ func main() {
 
 	log := logging.New(*logLevel)
 
+	members, err := parseMembers(*peers)
+	if err != nil {
+		log.Error("parse --peers", "err", err)
+		os.Exit(1)
+	}
+
 	if err := os.MkdirAll(*dataDir, 0o755); err != nil {
 		log.Error("create data dir", "err", err)
 		os.Exit(1)
@@ -44,6 +52,7 @@ func main() {
 		NodeID:           *nodeID,
 		ListenAddr:       *listen,
 		DataDir:          *dataDir,
+		Members:          members,
 		HeartbeatTimeout: *hbTimeout,
 	}, log)
 	if err != nil {
@@ -74,4 +83,26 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// parseMembers parses "id=addr,id=addr" into cluster members. An empty string
+// yields nil (single-node mode).
+func parseMembers(s string) ([]scheduler.Member, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	var members []scheduler.Member
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, addr, ok := strings.Cut(part, "=")
+		if !ok || id == "" || addr == "" {
+			return nil, fmt.Errorf("invalid member %q (want id=addr)", part)
+		}
+		members = append(members, scheduler.Member{ID: strings.TrimSpace(id), Address: strings.TrimSpace(addr)})
+	}
+	return members, nil
 }

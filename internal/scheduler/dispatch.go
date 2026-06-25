@@ -22,6 +22,9 @@ const maxBatch = 64
 // an in-memory lease keyed by a freshly minted task_id (the idempotency key the
 // worker echoes back via ReportTask).
 func (s *Server) PollTask(_ context.Context, req *distschedv1.PollTaskRequest) (*distschedv1.PollTaskResponse, error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
 	if !s.workerKnown(req.GetWorkerId()) {
 		return nil, status.Errorf(codes.FailedPrecondition, "unknown worker %q; re-register", req.GetWorkerId())
 	}
@@ -61,7 +64,7 @@ func (s *Server) PollTask(_ context.Context, req *distschedv1.PollTaskRequest) (
 		job.ScheduledAt = nil
 		job.StartedAt = timestamppb.New(now)
 		job.UpdatedAt = timestamppb.New(now)
-		if err := s.store.PutJob(job); err != nil {
+		if err := s.putJob(job); err != nil {
 			// Persisting the RUNNING transition failed; put the job back so it is
 			// not lost and stop handing out this batch.
 			s.log.Error("dispatch: persist job", "job_id", jobID, "err", err)
@@ -89,6 +92,9 @@ func (s *Server) PollTask(_ context.Context, req *distschedv1.PollTaskRequest) (
 // (duplicates, or a task already reaped) are acked and ignored — execution is
 // at-least-once and idempotent.
 func (s *Server) ReportTask(_ context.Context, req *distschedv1.ReportTaskRequest) (*distschedv1.ReportTaskResponse, error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
 	ls, ok := s.getLease(req.GetTaskId())
 	if !ok {
 		s.log.Debug("report for unknown/duplicate task; ignoring", "task_id", req.GetTaskId())
@@ -114,7 +120,7 @@ func (s *Server) ReportTask(_ context.Context, req *distschedv1.ReportTaskReques
 		job.LastError = ""
 		job.FinishedAt = timestamppb.New(now)
 		job.UpdatedAt = timestamppb.New(now)
-		if err := s.store.PutJob(job); err != nil {
+		if err := s.putJob(job); err != nil {
 			return nil, status.Errorf(codes.Internal, "persist success: %v", err)
 		}
 		s.removeLease(req.GetTaskId())
@@ -146,7 +152,7 @@ func (s *Server) handleFailure(job *distschedv1.Job, errMsg string, now time.Tim
 		delay := retry.Backoff(job.GetRetryPolicy(), int(job.GetAttempt()))
 		job.State = distschedv1.JobState_JOB_STATE_QUEUED
 		job.ScheduledAt = timestamppb.New(now.Add(delay))
-		if err := s.store.PutJob(job); err != nil {
+		if err := s.putJob(job); err != nil {
 			return status.Errorf(codes.Internal, "persist retry: %v", err)
 		}
 		s.armEnqueue(job.GetId(), delay)
@@ -164,7 +170,7 @@ func (s *Server) handleFailure(job *distschedv1.Job, errMsg string, now time.Tim
 	if err := s.store.PutDeadLetter(job); err != nil {
 		return status.Errorf(codes.Internal, "persist dead-letter: %v", err)
 	}
-	if err := s.store.PutJob(job); err != nil {
+	if err := s.putJob(job); err != nil {
 		return status.Errorf(codes.Internal, "persist failure: %v", err)
 	}
 	s.log.Warn("job dead-lettered",

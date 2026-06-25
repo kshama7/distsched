@@ -185,7 +185,7 @@ func TestEndToEndWithWorkerAgent(t *testing.T) {
 
 	agentCtx, cancel := context.WithCancel(ctx)
 	agent := worker.New(worker.Config{
-		SchedulerAddr:     addr,
+		Schedulers:        []string{addr},
 		Capacity:          2,
 		HeartbeatInterval: 200 * time.Millisecond,
 		PollInterval:      20 * time.Millisecond,

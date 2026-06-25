@@ -19,6 +19,9 @@ import (
 // dependencies and schedules (the PENDING path) are honored starting in
 // Milestone 6.
 func (s *Server) SubmitJob(_ context.Context, req *distschedv1.SubmitJobRequest) (*distschedv1.SubmitJobResponse, error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
 	job := req.GetJob()
 	if job == nil {
 		return nil, status.Error(codes.InvalidArgument, "job is required")
@@ -38,7 +41,7 @@ func (s *Server) SubmitJob(_ context.Context, req *distschedv1.SubmitJobRequest)
 	job.CreatedAt = now
 	job.UpdatedAt = now
 
-	if err := s.store.PutJob(job); err != nil {
+	if err := s.putJob(job); err != nil {
 		return nil, status.Errorf(codes.Internal, "persist job: %v", err)
 	}
 	s.queue.Push(job.GetId(), job.GetPriority(), now.AsTime())
@@ -85,6 +88,9 @@ func (s *Server) ListJobs(_ context.Context, req *distschedv1.ListJobsRequest) (
 // Canceling an already-canceled job is idempotent; canceling a job that has
 // already succeeded or failed is rejected.
 func (s *Server) CancelJob(_ context.Context, req *distschedv1.CancelJobRequest) (*distschedv1.CancelJobResponse, error) {
+	if err := s.requireLeader(); err != nil {
+		return nil, err
+	}
 	job, err := s.loadJob(req.GetJobId())
 	if err != nil {
 		return nil, err
@@ -99,7 +105,7 @@ func (s *Server) CancelJob(_ context.Context, req *distschedv1.CancelJobRequest)
 
 	job.State = distschedv1.JobState_JOB_STATE_CANCELED
 	job.UpdatedAt = timestamppb.Now()
-	if err := s.store.PutJob(job); err != nil {
+	if err := s.putJob(job); err != nil {
 		return nil, status.Errorf(codes.Internal, "persist cancel: %v", err)
 	}
 	s.queue.Remove(job.GetId())

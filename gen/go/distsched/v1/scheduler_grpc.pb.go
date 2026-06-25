@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SchedulerService_GetClusterStatus_FullMethodName = "/distsched.v1.SchedulerService/GetClusterStatus"
+	SchedulerService_RequestVote_FullMethodName      = "/distsched.v1.SchedulerService/RequestVote"
 	SchedulerService_Replicate_FullMethodName        = "/distsched.v1.SchedulerService/Replicate"
+	SchedulerService_GetClusterStatus_FullMethodName = "/distsched.v1.SchedulerService/GetClusterStatus"
 )
 
 // SchedulerServiceClient is the client API for SchedulerService service.
@@ -28,12 +29,17 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
 // SchedulerService is the scheduler<->scheduler cluster plane:
+//   - RequestVote drives lease-based leader election (terms + majority vote).
+//   - Replicate doubles as the leader's heartbeat (asserting leadership and
+//     resetting follower election timers) and ships the leader's metadata
+//     mutations to followers so a follower can take over with warm state on
+//     failover. Entries are applied eagerly, not quorum-committed: this is
+//     deliberately NOT a Raft consensus log. See docs/DESIGN.md.
 //   - GetClusterStatus powers `schedulerctl status` and is served by any node.
-//   - Replicate ships the leader's committed mutations to followers so a
-//     follower can take over with warm state on failover (Milestone 4).
 type SchedulerServiceClient interface {
-	GetClusterStatus(ctx context.Context, in *GetClusterStatusRequest, opts ...grpc.CallOption) (*GetClusterStatusResponse, error)
+	RequestVote(ctx context.Context, in *RequestVoteRequest, opts ...grpc.CallOption) (*RequestVoteResponse, error)
 	Replicate(ctx context.Context, in *ReplicateRequest, opts ...grpc.CallOption) (*ReplicateResponse, error)
+	GetClusterStatus(ctx context.Context, in *GetClusterStatusRequest, opts ...grpc.CallOption) (*GetClusterStatusResponse, error)
 }
 
 type schedulerServiceClient struct {
@@ -44,10 +50,10 @@ func NewSchedulerServiceClient(cc grpc.ClientConnInterface) SchedulerServiceClie
 	return &schedulerServiceClient{cc}
 }
 
-func (c *schedulerServiceClient) GetClusterStatus(ctx context.Context, in *GetClusterStatusRequest, opts ...grpc.CallOption) (*GetClusterStatusResponse, error) {
+func (c *schedulerServiceClient) RequestVote(ctx context.Context, in *RequestVoteRequest, opts ...grpc.CallOption) (*RequestVoteResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetClusterStatusResponse)
-	err := c.cc.Invoke(ctx, SchedulerService_GetClusterStatus_FullMethodName, in, out, cOpts...)
+	out := new(RequestVoteResponse)
+	err := c.cc.Invoke(ctx, SchedulerService_RequestVote_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -64,17 +70,32 @@ func (c *schedulerServiceClient) Replicate(ctx context.Context, in *ReplicateReq
 	return out, nil
 }
 
+func (c *schedulerServiceClient) GetClusterStatus(ctx context.Context, in *GetClusterStatusRequest, opts ...grpc.CallOption) (*GetClusterStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetClusterStatusResponse)
+	err := c.cc.Invoke(ctx, SchedulerService_GetClusterStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SchedulerServiceServer is the server API for SchedulerService service.
 // All implementations must embed UnimplementedSchedulerServiceServer
 // for forward compatibility.
 //
 // SchedulerService is the scheduler<->scheduler cluster plane:
+//   - RequestVote drives lease-based leader election (terms + majority vote).
+//   - Replicate doubles as the leader's heartbeat (asserting leadership and
+//     resetting follower election timers) and ships the leader's metadata
+//     mutations to followers so a follower can take over with warm state on
+//     failover. Entries are applied eagerly, not quorum-committed: this is
+//     deliberately NOT a Raft consensus log. See docs/DESIGN.md.
 //   - GetClusterStatus powers `schedulerctl status` and is served by any node.
-//   - Replicate ships the leader's committed mutations to followers so a
-//     follower can take over with warm state on failover (Milestone 4).
 type SchedulerServiceServer interface {
-	GetClusterStatus(context.Context, *GetClusterStatusRequest) (*GetClusterStatusResponse, error)
+	RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteResponse, error)
 	Replicate(context.Context, *ReplicateRequest) (*ReplicateResponse, error)
+	GetClusterStatus(context.Context, *GetClusterStatusRequest) (*GetClusterStatusResponse, error)
 	mustEmbedUnimplementedSchedulerServiceServer()
 }
 
@@ -85,11 +106,14 @@ type SchedulerServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedSchedulerServiceServer struct{}
 
-func (UnimplementedSchedulerServiceServer) GetClusterStatus(context.Context, *GetClusterStatusRequest) (*GetClusterStatusResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetClusterStatus not implemented")
+func (UnimplementedSchedulerServiceServer) RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequestVote not implemented")
 }
 func (UnimplementedSchedulerServiceServer) Replicate(context.Context, *ReplicateRequest) (*ReplicateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Replicate not implemented")
+}
+func (UnimplementedSchedulerServiceServer) GetClusterStatus(context.Context, *GetClusterStatusRequest) (*GetClusterStatusResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetClusterStatus not implemented")
 }
 func (UnimplementedSchedulerServiceServer) mustEmbedUnimplementedSchedulerServiceServer() {}
 func (UnimplementedSchedulerServiceServer) testEmbeddedByValue()                          {}
@@ -112,20 +136,20 @@ func RegisterSchedulerServiceServer(s grpc.ServiceRegistrar, srv SchedulerServic
 	s.RegisterService(&SchedulerService_ServiceDesc, srv)
 }
 
-func _SchedulerService_GetClusterStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetClusterStatusRequest)
+func _SchedulerService_RequestVote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestVoteRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(SchedulerServiceServer).GetClusterStatus(ctx, in)
+		return srv.(SchedulerServiceServer).RequestVote(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: SchedulerService_GetClusterStatus_FullMethodName,
+		FullMethod: SchedulerService_RequestVote_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SchedulerServiceServer).GetClusterStatus(ctx, req.(*GetClusterStatusRequest))
+		return srv.(SchedulerServiceServer).RequestVote(ctx, req.(*RequestVoteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -148,6 +172,24 @@ func _SchedulerService_Replicate_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SchedulerService_GetClusterStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetClusterStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SchedulerServiceServer).GetClusterStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SchedulerService_GetClusterStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SchedulerServiceServer).GetClusterStatus(ctx, req.(*GetClusterStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SchedulerService_ServiceDesc is the grpc.ServiceDesc for SchedulerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -156,12 +198,16 @@ var SchedulerService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*SchedulerServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "GetClusterStatus",
-			Handler:    _SchedulerService_GetClusterStatus_Handler,
+			MethodName: "RequestVote",
+			Handler:    _SchedulerService_RequestVote_Handler,
 		},
 		{
 			MethodName: "Replicate",
 			Handler:    _SchedulerService_Replicate_Handler,
+		},
+		{
+			MethodName: "GetClusterStatus",
+			Handler:    _SchedulerService_GetClusterStatus_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

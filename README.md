@@ -8,11 +8,12 @@ replication, and recovery from process and node failure.
 
 > **Status: under active construction.** This repo is being built in 8
 > milestones (see [Roadmap](#roadmap)). Each milestone leaves `main` in a
-> runnable, tested state. **Milestones 1–3 are complete**: the scheduler runs as
-> a live gRPC server with BoltDB persistence and a priority queue, dispatches
-> tasks to workers that execute them as subprocesses, and handles failures with
-> exponential-backoff retry and a dead-letter queue. Leader election and
-> clustering arrive in Milestone 4.
+> runnable, tested state. **Milestones 1–4 are complete**: a cluster of
+> schedulers elects a leader (Raft-style majority vote with term fencing), the
+> leader dispatches tasks to workers that execute them as subprocesses, failures
+> are retried with backoff or dead-lettered, and metadata is replicated to
+> followers so a new leader takes over on failover. Workers auto-discover and
+> follow the leader.
 
 ## What this is
 
@@ -34,13 +35,16 @@ The scheduling model is deliberately narrow but complete:
 
 These are deliberate cuts, not omissions I'm hiding:
 
-- **It does not implement Raft.** Leadership uses a documented, lease-based
-  election (single fenced lease row with a monotonic term). This is easier to
-  reason about and verify than a hand-rolled consensus log, at the cost of a
-  bounded weaker-consistency window. The tradeoff — including what can be lost
-  on failover and why that's acceptable here — is written up in
+- **It implements Raft-style leader *election*, not Raft's replicated log.**
+  Leadership is a renewable lease decided by terms + randomized timeouts +
+  majority vote (the well-understood, testable half of consensus). The log-commit
+  machinery — the subtly-broken-by-default part — is deliberately omitted:
+  metadata replication is eager and best-effort, and we rely on idempotent,
+  at-least-once execution. Exactly what can be lost on failover, and why that's
+  acceptable here, is written up in
   [docs/DESIGN.md](docs/DESIGN.md#leadership-why-leases-not-raft). If you need
-  linearizable consensus, run this against an external store (etcd) instead.
+  linearizable, zero-loss failover, delegate the lease to etcd/Consul (as K8s
+  does); the election is isolated in `internal/cluster` to make that swap small.
 - **One scheduling mode, done well**, rather than seven half-finished ones.
 - **No dashboard.** Observability is Prometheus metrics + structured logs + a
   `schedulerctl` CLI.
@@ -120,6 +124,23 @@ exhaust their retries. Until the `schedulerctl` CLI lands (Milestone 7), submit
 jobs via the `JobService` gRPC API (exercised end-to-end, including the real
 worker agent, in `internal/scheduler/dispatch_test.go`).
 
+Run a 3-node cluster with leader election and failover:
+
+```bash
+PEERS=node-0=localhost:7101,node-1=localhost:7102,node-2=localhost:7103
+./bin/scheduler --node-id node-0 --listen :7101 --peers $PEERS --data-dir ./data/0 &
+./bin/scheduler --node-id node-1 --listen :7102 --peers $PEERS --data-dir ./data/1 &
+./bin/scheduler --node-id node-2 --listen :7103 --peers $PEERS --data-dir ./data/2 &
+
+# the worker is given all three as seeds and follows whichever is leader
+./bin/worker --schedulers localhost:7101,localhost:7102,localhost:7103
+```
+
+The nodes elect one leader; only the leader accepts writes and dispatches, and
+followers redirect clients to it. Kill the leader and a follower takes over
+within an election timeout, resuming from replicated state — the scripted
+demonstration of this is Milestone 8's chaos test.
+
 ## Roadmap
 
 | #  | Milestone                                                            | Status |
@@ -127,7 +148,7 @@ worker agent, in `internal/scheduler/dispatch_test.go`).
 | 1  | Repo scaffold + proto definitions (Job / Worker / Scheduler)        | ✅ done |
 | 2  | Single scheduler: BoltDB persistence, priority queue, heartbeats    | ✅ done |
 | 3  | Multi-worker: assignment, complete/failed, backoff retry, dead-letter | ✅ done |
-| 4  | Multi-scheduler: lease election, metadata replication, failover     | ⏳     |
+| 4  | Multi-scheduler: lease election, metadata replication, failover     | ✅ done |
 | 5  | Failure recovery: missed-heartbeat requeue, idempotency, checkpoint | ⏳     |
 | 6  | DAG dependencies + delayed/cron jobs                                | ⏳     |
 | 7  | Observability: Prometheus metrics, structured logs, `schedulerctl`  | ⏳     |

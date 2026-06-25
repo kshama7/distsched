@@ -33,66 +33,81 @@ case. Verifying it genuinely requires randomized/Jepsen-style testing that is a
 project in itself. Shipping a plausible-but-unverified consensus log would be
 **dishonest engineering**: it signals more than it delivers.
 
-Instead leadership is **lease-based**:
+### What we *did* implement
 
-- A single record holds `(holder_id, term, acquired_at, expires_at)`.
-- To become leader, a node performs a guarded write: claim the record only if
-  it is empty or expired. The winner increments `term`.
-- The leader **renews** the lease well before `expires_at` (renew interval ≪
-  lease TTL). If it stops renewing — crash, partition, GC pause — the lease
-  expires and a follower acquires it on the next attempt.
-- Every leader-authored side effect (replication, eventually external writes)
-  carries the leader's `term`. A node that sees a higher term **steps down**;
-  this fences a stale leader that wakes up from a pause.
+The tractable, well-understood, **testable half** of consensus: **Raft-style
+leader election** (`internal/cluster`). It is "lease-based" in that leadership is
+a renewable, time-bounded grant — a follower that stops hearing from the leader
+for an election timeout campaigns for a new term.
 
-This is the same primitive behind Kubernetes' `Lease`-based leader election and
-Chubby/ZooKeeper lock-based leadership. It is small, easy to reason about, and
-straightforward to test.
+- **Terms.** A monotonically increasing `term` is the logical clock and the
+  fencing token. `currentTerm` and `votedFor` are persisted to BoltDB so a
+  restart cannot grant two votes in one term.
+- **Election.** On an election timeout (randomized, to avoid split votes) a
+  follower becomes a **candidate**, increments its term, votes for itself, and
+  requests votes from peers (`SchedulerService.RequestVote`). A peer grants at
+  most one vote per term. A candidate that collects votes from a **majority**
+  becomes leader.
+- **Lease renewal.** The leader periodically sends `Replicate` to every follower
+  (heartbeat + metadata). Each heartbeat resets the follower's election timer —
+  this *is* the lease renewal. Miss them for an election timeout and a new term
+  begins.
+- **Fencing.** Every heartbeat and replication carries the leader's `term`. A
+  node that sees a higher term steps down; a follower rejects a lower-term leader
+  and returns its higher term, forcing the stale leader to step down.
 
-### What this costs — the honest part
+**Safety:** at most one leader per term, because election needs a majority and
+each member casts one vote per term. This is the same core as Raft/Chubby/etcd
+leader election and as Kubernetes' lease-based election.
 
-Lease leadership gives **mutual exclusion that is correct only as far as clocks
-and the fencing token make it**. The known weakness is the failover window:
+### What we deliberately did *not* implement — the honest part
 
-- If a leader is partitioned or stalls (e.g. a long GC pause) but still believes
-  it holds the lease, it may keep acting for up to roughly the lease TTL while a
-  new leader is already elected. This is the classic split-brain window.
-- distsched bounds the damage three ways rather than pretending it can't happen:
-  1. **Fencing tokens (`term`)** make a stale leader's late writes rejectable —
-     followers and the replication path refuse a lower term.
-  2. **Idempotent task execution** (Milestone 5): each attempt has a unique
-     `task_id`; a worker that receives a duplicate for an already-finished
-     attempt drops it. Double-dispatch degrades to wasted work, not double
-     side-effects, for idempotent tasks.
-  3. **Conservative timing**: renew interval ≪ lease TTL ≪ heartbeat-eviction
-     window, so a transient stall doesn't trigger failover.
+We do **not** implement Raft's replicated-log commit machinery (quorum-committed,
+linearizable log with truncation/snapshots/membership changes). That is the part
+that is subtly-broken-by-default and needs Jepsen-grade testing to trust.
 
-What can still be lost: a job acknowledged by the old leader but not yet
-replicated when it dies may need to be re-derived from the durable store on the
-new leader. We accept *at-least-once* execution, never *at-most-once*, and lean
-on idempotency. Tasks with non-idempotent external effects are out of scope.
+Consequently **replication is eager and best-effort, not quorum-committed.** The
+leader keeps an in-memory log of metadata mutations (job/worker upserts), seeded
+with a full snapshot when it takes office, and ships each follower the entries it
+has not acked. Followers apply immediately — there is **no wait for a majority to
+durably ack before the leader acts.** The implications, stated plainly:
 
-If a deployment genuinely needs linearizable leadership, the lease record is
-deliberately tiny and can be backed by etcd/Consul instead of the built-in
-store — that swap is the supported escape hatch, not a rewrite.
+- **At-least-once, never at-most-once.** A job acknowledged by a leader that dies
+  before replicating it may not exist on the new leader and would be lost, or a
+  task may run twice across a failover. We lean on **idempotent execution**
+  (unique `task_id` per attempt; Milestone 5) so a double-dispatch wastes work
+  rather than causing double side effects. Tasks with non-idempotent external
+  effects are out of scope.
+- **Split-brain window.** A partitioned old leader does not self-demote; it keeps
+  acting until it next contacts a higher-term node. Its writes are fenced by
+  `term` on the replication path, and only a majority partition can elect a new
+  leader, so at most one leader can make *progress* — but the minority-side stale
+  leader can still accept local writes that will be discarded. Conservative
+  timing (heartbeat interval ≪ election timeout) keeps this window small.
+
+If a deployment needs linearizable leadership and zero-loss failover, the right
+move is to delegate the lease to a system that already solved consensus — etcd or
+Consul — exactly as Kubernetes does. The election here is intentionally small and
+isolated in `internal/cluster` so that swap is a contained change, not a rewrite.
 
 ## Persistence
 
 Each scheduler embeds **BoltDB** (single-file, B+tree, fully ACID via mmap +
 write-ahead). It is not a server, which suits an embedded control-plane store.
 
-Planned buckets:
+Buckets:
 
 - `jobs` — `job_id → serialized Job` (source of truth).
-- `queue_index` — ordering hints for the ready/priority queue, rebuildable from
-  `jobs` on startup.
+- `workers` — `worker_id → serialized WorkerInfo`.
 - `dead_letter` — jobs that exhausted retries.
-- `lease` — the single leadership record.
-- `meta` — schema version, last-applied replication seq.
+- `meta` — election state (`election_term`, `election_voted_for`), persisted so a
+  restart cannot grant two votes in one term.
 
-On restart a scheduler reloads `jobs`, rebuilds the in-memory priority queue,
-and resumes — the **checkpoint recovery** path (Milestone 5). The in-memory
-queue is always a cache over the durable store, never the system of record.
+The in-memory priority queue is always a cache over `jobs`. A node builds it only
+when it becomes leader (`onBecomeLeader` → rebuild from the store); a follower
+that wins an election therefore resumes from its replicated store — the
+**checkpoint recovery** path hardened in Milestone 5. The queue is never the
+system of record.
 
 ## Scheduling model
 
