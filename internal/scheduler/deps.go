@@ -166,6 +166,7 @@ func (s *Server) placeNewJob(job *distschedv1.Job, now time.Time) {
 		if err := s.putJob(job); err != nil {
 			s.log.Error("place: persist canceled", "job_id", job.GetId(), "err", err)
 		}
+		s.metrics.JobsCanceled.Inc()
 	case !ready:
 		job.State = distschedv1.JobState_JOB_STATE_PENDING
 		job.UpdatedAt = timestamppb.New(now)
@@ -227,6 +228,7 @@ func (s *Server) cancelCascade(jobID, reason string) {
 				s.log.Error("cancelCascade: persist", "job_id", cur, "err", err)
 			}
 			s.queue.Remove(cur)
+			s.metrics.JobsCanceled.Inc()
 			s.log.Warn("job canceled by dependency", "job_id", cur, "reason", reason)
 		}
 		dependents := s.dependentsOf(cur)

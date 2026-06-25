@@ -8,7 +8,7 @@ replication, and recovery from process and node failure.
 
 > **Status: under active construction.** This repo is being built in 8
 > milestones (see [Roadmap](#roadmap)). Each milestone leaves `main` in a
-> runnable, tested state. **Milestones 1–6 are complete**: a cluster of
+> runnable, tested state. **Milestones 1–7 are complete**: a cluster of
 > schedulers elects a leader (Raft-style majority vote with term fencing), the
 > leader dispatches tasks to workers that execute them as subprocesses, failures
 > are retried with backoff or dead-lettered, and metadata is replicated to
@@ -16,7 +16,9 @@ replication, and recovery from process and node failure.
 > dead workers and expired leases, orphaned jobs are reclaimed on restart, and
 > execution is idempotent at-least-once. Jobs can declare **DAG dependencies**
 > (cycles rejected at submit) and **delayed or recurring cron schedules**.
-> Workers auto-discover and follow the leader.
+> Workers auto-discover and follow the leader. Operability is covered by
+> **Prometheus metrics**, **zap structured logging**, and the **`schedulerctl`
+> CLI**.
 
 ## What this is
 
@@ -144,6 +146,17 @@ followers redirect clients to it. Kill the leader and a follower takes over
 within an election timeout, resuming from replicated state — the scripted
 demonstration of this is Milestone 8's chaos test.
 
+Drive the cluster with the CLI and scrape metrics:
+
+```bash
+schedulerctl --addr localhost:7101,localhost:7102,localhost:7103 status
+schedulerctl --addr localhost:7101 submit --name hello --command echo --arg world --priority 5
+schedulerctl --addr localhost:7101 submit --command echo --arg load --depends-on extract
+schedulerctl --addr localhost:7101 submit --command echo --cron "@every 30s"
+schedulerctl --addr localhost:7101 list
+curl -s localhost:9090/metrics | grep distsched_   # Prometheus metrics
+```
+
 ## Roadmap
 
 | #  | Milestone                                                            | Status |
@@ -154,7 +167,7 @@ demonstration of this is Milestone 8's chaos test.
 | 4  | Multi-scheduler: lease election, metadata replication, failover     | ✅ done |
 | 5  | Failure recovery: missed-heartbeat requeue, idempotency, checkpoint | ✅ done |
 | 6  | DAG dependencies + delayed/cron jobs                                | ✅ done |
-| 7  | Observability: Prometheus metrics, structured logs, `schedulerctl`  | ⏳     |
+| 7  | Observability: Prometheus metrics, structured logs, `schedulerctl`  | ✅ done |
 | 8  | Docker Compose cluster + chaos/failover demo + reference K8s        | ⏳     |
 
 ## License

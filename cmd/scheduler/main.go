@@ -26,6 +26,7 @@ func main() {
 		dataDir     = flag.String("data-dir", "./data", "directory for the BoltDB store")
 		peers       = flag.String("peers", "", "cluster membership as id=addr,... (including self); empty for single-node")
 		hbTimeout   = flag.Duration("heartbeat-timeout", 15*time.Second, "worker liveness timeout")
+		metricsAddr = flag.String("metrics-addr", ":9090", "HTTP address for Prometheus /metrics (empty to disable)")
 		logLevel    = flag.String("log-level", "info", "log level (debug|info|warn|error)")
 	)
 	flag.Parse()
@@ -54,6 +55,7 @@ func main() {
 		DataDir:          *dataDir,
 		Members:          members,
 		HeartbeatTimeout: *hbTimeout,
+		MetricsAddr:      *metricsAddr,
 	}, log)
 	if err != nil {
 		log.Error("init scheduler", "err", err)

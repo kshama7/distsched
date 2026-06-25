@@ -73,6 +73,7 @@ func (s *Server) PollTask(_ context.Context, req *distschedv1.PollTaskRequest) (
 		}
 
 		s.addLease(&lease{taskID: taskID, jobID: jobID, workerID: req.GetWorkerId(), attempt: attempt, deadline: deadline})
+		s.metrics.TasksDispatched.Inc()
 		out = append(out, &distschedv1.TaskAssignment{
 			TaskId:        taskID,
 			JobId:         jobID,
@@ -128,6 +129,7 @@ func (s *Server) ReportTask(_ context.Context, req *distschedv1.ReportTaskReques
 		if err := s.putJob(job); err != nil {
 			return nil, status.Errorf(codes.Internal, "persist success: %v", err)
 		}
+		s.metrics.JobsSucceeded.Inc()
 		s.log.Info("job succeeded", "job_id", job.GetId(), "attempt", job.GetAttempt())
 		// Unblock anything waiting on this job.
 		s.removeFromIndex(job.GetId())
@@ -163,6 +165,7 @@ func (s *Server) handleFailure(job *distschedv1.Job, errMsg string, now time.Tim
 			return status.Errorf(codes.Internal, "persist retry: %v", err)
 		}
 		s.armEnqueue(job.GetId(), delay)
+		s.metrics.TasksRetried.Inc()
 		s.log.Info("job retry scheduled",
 			"job_id", job.GetId(), "attempt", job.GetAttempt(), "max_attempts", maxAttempts,
 			"delay", delay.String(), "error", errMsg)
@@ -187,6 +190,7 @@ func (s *Server) handleFailure(job *distschedv1.Job, errMsg string, now time.Tim
 	if err := s.putJob(job); err != nil {
 		return status.Errorf(codes.Internal, "persist failure: %v", err)
 	}
+	s.metrics.JobsDeadLettered.Inc()
 	s.log.Warn("job dead-lettered",
 		"job_id", job.GetId(), "attempts", job.GetAttempt(), "error", errMsg)
 	// A dead-lettered job's dependents can never run.

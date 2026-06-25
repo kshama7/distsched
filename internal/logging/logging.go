@@ -1,27 +1,36 @@
-// Package logging builds the structured logger used by all binaries. It uses
-// the standard library log/slog for now; Milestone 7 swaps the backend to zap
-// behind this same constructor.
+// Package logging builds the structured logger used by all binaries. It exposes
+// a standard library *slog.Logger so call sites stay decoupled from the backend,
+// but the backend is Uber's zap (via zapslog) for fast, production-grade JSON
+// logging.
 package logging
 
 import (
 	"log/slog"
 	"os"
 	"strings"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/exp/zapslog"
+	"go.uber.org/zap/zapcore"
 )
 
-// New returns a JSON structured logger writing to stderr at the given level
+// New returns a zap-backed slog logger writing JSON to stderr at the given level
 // ("debug", "info", "warn", "error"; defaults to info).
 func New(level string) *slog.Logger {
-	var lvl slog.Level
+	lvl := zapcore.InfoLevel
 	switch strings.ToLower(level) {
 	case "debug":
-		lvl = slog.LevelDebug
+		lvl = zapcore.DebugLevel
 	case "warn":
-		lvl = slog.LevelWarn
+		lvl = zapcore.WarnLevel
 	case "error":
-		lvl = slog.LevelError
-	default:
-		lvl = slog.LevelInfo
+		lvl = zapcore.ErrorLevel
 	}
-	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
+
+	encCfg := zap.NewProductionEncoderConfig()
+	encCfg.TimeKey = "time"
+	encCfg.EncodeTime = zapcore.ISO8601TimeEncoder
+	core := zapcore.NewCore(zapcore.NewJSONEncoder(encCfg), zapcore.AddSync(os.Stderr), lvl)
+
+	return slog.New(zapslog.NewHandler(core))
 }

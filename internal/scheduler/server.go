@@ -11,16 +11,19 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 
 	distschedv1 "github.com/kshama7/distsched/gen/go/distsched/v1"
 	"github.com/kshama7/distsched/internal/cluster"
+	"github.com/kshama7/distsched/internal/metrics"
 	"github.com/kshama7/distsched/internal/queue"
 	"github.com/kshama7/distsched/internal/store"
 )
@@ -55,6 +58,9 @@ type Config struct {
 	// ReaperInterval is how often the leader scans for dead workers and expired
 	// leases to requeue their tasks.
 	ReaperInterval time.Duration
+	// MetricsAddr is the HTTP bind address for /metrics. Empty disables the HTTP
+	// endpoint (metrics are still collected in the registry).
+	MetricsAddr string
 }
 
 func (c *Config) withDefaults() {
@@ -134,6 +140,10 @@ type Server struct {
 	depMu    sync.Mutex
 	revIndex map[string]map[string]struct{}
 
+	metrics          *metrics.Metrics
+	metricsHTTP      *http.Server
+	metricsBoundAddr string
+
 	closed   atomic.Bool
 	bgCancel context.CancelFunc
 	grpc     *grpc.Server
@@ -177,9 +187,25 @@ func New(cfg Config, log *slog.Logger) (*Server, error) {
 		ElectionTimeoutMax: cfg.ElectionTimeoutMax,
 	}, s.xport, &electionStore{store: st}, s.log, s.onBecomeLeader, s.onStepDown)
 
+	s.metrics = metrics.New(metrics.LiveSources{
+		QueueDepth:      func() float64 { return float64(s.QueueDepth()) },
+		InFlight:        func() float64 { return float64(s.InFlight()) },
+		DeadLetterTotal: func() float64 { return float64(s.DeadLetterCount()) },
+		IsLeader:        func() float64 { return boolToFloat(s.node.IsLeader()) },
+		Term:            func() float64 { return float64(s.node.Term()) },
+		WorkersByState:  s.workersByState,
+	})
+
 	if err := s.recover(); err != nil {
 		_ = st.Close()
 		return nil, err
+	}
+
+	if cfg.MetricsAddr != "" {
+		if err := s.startMetricsHTTP(cfg.MetricsAddr); err != nil {
+			_ = st.Close()
+			return nil, err
+		}
 	}
 
 	s.grpc = grpc.NewServer()
@@ -431,6 +457,11 @@ func (s *Server) Shutdown() {
 	s.retryTimers = make(map[string]*time.Timer)
 	s.dispatchMu.Unlock()
 
+	if s.metricsHTTP != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = s.metricsHTTP.Shutdown(ctx)
+		cancel()
+	}
 	if s.grpc != nil {
 		s.grpc.GracefulStop()
 	}
@@ -438,6 +469,58 @@ func (s *Server) Shutdown() {
 	if err := s.store.Close(); err != nil {
 		s.log.Error("closing store", "err", err)
 	}
+}
+
+// startMetricsHTTP binds and serves /metrics and /healthz.
+func (s *Server) startMetricsHTTP(addr string) error {
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("metrics listen %q: %w", addr, err)
+	}
+	s.metricsBoundAddr = lis.Addr().String()
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(s.metrics.Reg, promhttp.HandlerOpts{}))
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	s.metricsHTTP = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	s.log.Info("metrics serving", "addr", s.metricsBoundAddr)
+	go func() {
+		if err := s.metricsHTTP.Serve(lis); err != nil && err != http.ErrServerClosed {
+			s.log.Error("metrics http", "err", err)
+		}
+	}()
+	return nil
+}
+
+// MetricsBoundAddr returns the address the metrics endpoint is bound to ("" if
+// disabled).
+func (s *Server) MetricsBoundAddr() string { return s.metricsBoundAddr }
+
+// workersByState counts registered workers grouped by liveness state label.
+func (s *Server) workersByState() map[string]float64 {
+	s.workersMu.Lock()
+	defer s.workersMu.Unlock()
+	out := map[string]float64{"alive": 0, "suspect": 0, "dead": 0}
+	for _, w := range s.workers {
+		switch w.GetState() {
+		case distschedv1.WorkerState_WORKER_STATE_ALIVE:
+			out["alive"]++
+		case distschedv1.WorkerState_WORKER_STATE_SUSPECT:
+			out["suspect"]++
+		case distschedv1.WorkerState_WORKER_STATE_DEAD:
+			out["dead"]++
+		}
+	}
+	return out
+}
+
+func boolToFloat(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // QueueDepth returns the number of ready jobs; used by tests and metrics.

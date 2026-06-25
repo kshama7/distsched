@@ -119,6 +119,7 @@ func (s *Server) requeueLease(taskID, reason string) {
 	if job.GetState() != distschedv1.JobState_JOB_STATE_RUNNING {
 		return // job already completed/canceled
 	}
+	s.metrics.TasksRequeued.Inc()
 	s.log.Warn("requeuing lost task",
 		"task_id", taskID, "job_id", l.jobID, "worker_id", l.workerID, "reason", reason)
 	if err := s.handleFailure(job, reason, time.Now()); err != nil {

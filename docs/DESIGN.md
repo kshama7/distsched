@@ -153,14 +153,18 @@ One mode, implemented fully:
 | Stale leader returns from pause | Fenced by `term`; steps down                                   |
 | Full cluster restart            | Each node reloads BoltDB; leader re-elected; queue rebuilt     |
 
-## Observability (Milestone 7)
+## Observability
 
-- **Prometheus** metrics: queue depth by state, dispatch/complete/fail/retry
-  counters, dead-letter size, lease term and current role, worker liveness.
-- **zap** structured logs with job/worker/task IDs and the lease term on every
-  leadership transition.
-- **`schedulerctl`**: submit/get/list/cancel jobs and `status` for cluster +
-  lease view.
+- **Prometheus** metrics on `/metrics` (each node owns a private registry):
+  event counters (`distsched_jobs_submitted_total`, `_succeeded_total`,
+  `_dead_lettered_total`, `_canceled_total`, `distsched_tasks_dispatched_total`,
+  `_retried_total`, `_requeued_total`) and live gauges scraped on demand
+  (`distsched_queue_depth`, `_inflight_tasks`, `_dead_letter_size`,
+  `_is_leader`, `_election_term`, and `distsched_workers{state=...}`).
+- **zap** structured JSON logs behind a stdlib `*slog.Logger` (so call sites are
+  backend-agnostic), tagged with node, job, worker, task IDs and the lease term.
+- **`schedulerctl`**: `submit` / `get` / `list` / `cancel` jobs and `status` for
+  the cluster + lease view. It discovers the leader from a seed list.
 
 ## Testing strategy
 

@@ -49,6 +49,7 @@ func (s *Server) SubmitJob(_ context.Context, req *distschedv1.SubmitJobRequest)
 	job.UpdatedAt = now
 
 	s.placeNewJob(job, now.AsTime())
+	s.metrics.JobsSubmitted.Inc()
 
 	s.log.Info("job submitted",
 		"job_id", job.GetId(),
@@ -114,6 +115,7 @@ func (s *Server) CancelJob(_ context.Context, req *distschedv1.CancelJobRequest)
 		return nil, status.Errorf(codes.Internal, "persist cancel: %v", err)
 	}
 	s.queue.Remove(job.GetId())
+	s.metrics.JobsCanceled.Inc()
 	s.log.Info("job canceled", "job_id", job.GetId(), "queue_depth", s.queue.Len())
 
 	// Cancel anything that depended on this job — it can never run now.
