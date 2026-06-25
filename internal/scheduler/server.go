@@ -129,6 +129,11 @@ type Server struct {
 	replSeq   int64
 	peerAcked map[string]int64
 
+	// depMu guards the reverse dependency index: dependency job ID -> set of
+	// dependent job IDs waiting on it (DAG reverse edges).
+	depMu    sync.Mutex
+	revIndex map[string]map[string]struct{}
+
 	closed   atomic.Bool
 	bgCancel context.CancelFunc
 	grpc     *grpc.Server
@@ -162,6 +167,7 @@ func New(cfg Config, log *slog.Logger) (*Server, error) {
 		leases:      make(map[string]*lease),
 		retryTimers: make(map[string]*time.Timer),
 		peerAcked:   make(map[string]int64),
+		revIndex:    make(map[string]map[string]struct{}),
 	}
 	s.xport = newPeerTransport(members, cfg.NodeID, s.log)
 	s.node = cluster.New(cluster.Config{
@@ -239,6 +245,10 @@ func (s *Server) rebuildSchedulingState() {
 	now := time.Now()
 	var requeued, delayed, orphaned int
 	for _, j := range jobs {
+		// Rebuild the reverse dependency index for every non-terminal job.
+		if !terminal(j.GetState()) {
+			s.addDeps(j)
+		}
 		switch j.GetState() {
 		case distschedv1.JobState_JOB_STATE_QUEUED:
 			at := j.GetScheduledAt().AsTime()
@@ -259,10 +269,18 @@ func (s *Server) rebuildSchedulingState() {
 			orphaned++
 		}
 	}
+	// Re-evaluate PENDING jobs: their dependencies may have completed before this
+	// node took leadership.
+	for _, j := range jobs {
+		if j.GetState() == distschedv1.JobState_JOB_STATE_PENDING {
+			s.tryPromote(j.GetId())
+		}
+	}
 	s.log.Info("scheduling state rebuilt", "requeued", requeued, "delayed", delayed, "orphaned_reclaimed", orphaned)
 }
 
-// clearSchedulingState empties the queue, stops timers, and drops leases.
+// clearSchedulingState empties the queue, stops timers, and drops leases and the
+// dependency index.
 func (s *Server) clearSchedulingState() {
 	s.queue.Clear()
 	s.dispatchMu.Lock()
@@ -272,6 +290,10 @@ func (s *Server) clearSchedulingState() {
 	s.retryTimers = make(map[string]*time.Timer)
 	s.leases = make(map[string]*lease)
 	s.dispatchMu.Unlock()
+
+	s.depMu.Lock()
+	s.revIndex = make(map[string]map[string]struct{})
+	s.depMu.Unlock()
 }
 
 // armEnqueue schedules a job to enter the ready queue after delay. A non-positive

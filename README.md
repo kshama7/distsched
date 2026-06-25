@@ -8,14 +8,15 @@ replication, and recovery from process and node failure.
 
 > **Status: under active construction.** This repo is being built in 8
 > milestones (see [Roadmap](#roadmap)). Each milestone leaves `main` in a
-> runnable, tested state. **Milestones 1–5 are complete**: a cluster of
+> runnable, tested state. **Milestones 1–6 are complete**: a cluster of
 > schedulers elects a leader (Raft-style majority vote with term fencing), the
 > leader dispatches tasks to workers that execute them as subprocesses, failures
 > are retried with backoff or dead-lettered, and metadata is replicated to
 > followers so a new leader takes over on failover. A reaper requeues the work of
 > dead workers and expired leases, orphaned jobs are reclaimed on restart, and
-> execution is idempotent at-least-once. Workers auto-discover and follow the
-> leader.
+> execution is idempotent at-least-once. Jobs can declare **DAG dependencies**
+> (cycles rejected at submit) and **delayed or recurring cron schedules**.
+> Workers auto-discover and follow the leader.
 
 ## What this is
 
@@ -152,7 +153,7 @@ demonstration of this is Milestone 8's chaos test.
 | 3  | Multi-worker: assignment, complete/failed, backoff retry, dead-letter | ✅ done |
 | 4  | Multi-scheduler: lease election, metadata replication, failover     | ✅ done |
 | 5  | Failure recovery: missed-heartbeat requeue, idempotency, checkpoint | ✅ done |
-| 6  | DAG dependencies + delayed/cron jobs                                | ⏳     |
+| 6  | DAG dependencies + delayed/cron jobs                                | ✅ done |
 | 7  | Observability: Prometheus metrics, structured logs, `schedulerctl`  | ⏳     |
 | 8  | Docker Compose cluster + chaos/failover demo + reference K8s        | ⏳     |
 

@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -13,11 +14,10 @@ import (
 	"github.com/kshama7/distsched/internal/store"
 )
 
-// SubmitJob validates, persists, and enqueues a job.
-//
-// Milestone 2 places every accepted job directly into the QUEUED state. DAG
-// dependencies and schedules (the PENDING path) are honored starting in
-// Milestone 6.
+// SubmitJob validates and places a job. Depending on its dependencies and
+// schedule the job starts QUEUED (ready now), PENDING (waiting on DAG
+// predecessors or a future fire time), or CANCELED (a dependency already
+// failed). Dependency cycles and malformed cron expressions are rejected.
 func (s *Server) SubmitJob(_ context.Context, req *distschedv1.SubmitJobRequest) (*distschedv1.SubmitJobResponse, error) {
 	if err := s.requireLeader(); err != nil {
 		return nil, err
@@ -29,28 +29,33 @@ func (s *Server) SubmitJob(_ context.Context, req *distschedv1.SubmitJobRequest)
 	if job.GetSpec().GetCommand() == "" {
 		return nil, status.Error(codes.InvalidArgument, "job.spec.command is required")
 	}
+	if expr := job.GetSchedule().GetCronExpr(); expr != "" {
+		if _, err := nextCron(expr, time.Now()); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid cron_expr: %v", err)
+		}
+	}
 	if job.GetId() == "" {
 		job.Id = ids.New("job")
 	}
+	if len(job.GetDependsOn()) > 0 && s.wouldCreateCycle(job.GetId(), job.GetDependsOn()) {
+		return nil, status.Error(codes.InvalidArgument, "dependencies form a cycle")
+	}
 
 	now := timestamppb.Now()
-	job.State = distschedv1.JobState_JOB_STATE_QUEUED
 	job.Attempt = 0
 	job.AssignedWorkerId = ""
 	job.LastError = ""
 	job.CreatedAt = now
 	job.UpdatedAt = now
 
-	if err := s.putJob(job); err != nil {
-		return nil, status.Errorf(codes.Internal, "persist job: %v", err)
-	}
-	s.queue.Push(job.GetId(), job.GetPriority(), now.AsTime())
+	s.placeNewJob(job, now.AsTime())
 
 	s.log.Info("job submitted",
 		"job_id", job.GetId(),
 		"name", job.GetName(),
 		"priority", job.GetPriority(),
-		"queue_depth", s.queue.Len())
+		"state", job.GetState().String(),
+		"depends_on", len(job.GetDependsOn()))
 	return &distschedv1.SubmitJobResponse{JobId: job.GetId()}, nil
 }
 
@@ -110,6 +115,9 @@ func (s *Server) CancelJob(_ context.Context, req *distschedv1.CancelJobRequest)
 	}
 	s.queue.Remove(job.GetId())
 	s.log.Info("job canceled", "job_id", job.GetId(), "queue_depth", s.queue.Len())
+
+	// Cancel anything that depended on this job — it can never run now.
+	s.cancelCascade(job.GetId(), "upstream dependency "+job.GetId()+" was canceled")
 	return &distschedv1.CancelJobResponse{Job: job}, nil
 }
 

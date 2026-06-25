@@ -115,6 +115,11 @@ func (s *Server) ReportTask(_ context.Context, req *distschedv1.ReportTaskReques
 	now := time.Now()
 	switch req.GetResult() {
 	case distschedv1.TaskResult_TASK_RESULT_SUCCEEDED:
+		s.removeLease(req.GetTaskId())
+		// A cron job re-arms for its next occurrence rather than going terminal.
+		if s.maybeRescheduleCron(job, now) {
+			break
+		}
 		job.State = distschedv1.JobState_JOB_STATE_SUCCEEDED
 		job.AssignedWorkerId = ""
 		job.LastError = ""
@@ -123,8 +128,10 @@ func (s *Server) ReportTask(_ context.Context, req *distschedv1.ReportTaskReques
 		if err := s.putJob(job); err != nil {
 			return nil, status.Errorf(codes.Internal, "persist success: %v", err)
 		}
-		s.removeLease(req.GetTaskId())
 		s.log.Info("job succeeded", "job_id", job.GetId(), "attempt", job.GetAttempt())
+		// Unblock anything waiting on this job.
+		s.removeFromIndex(job.GetId())
+		s.promoteDependents(job.GetId())
 
 	case distschedv1.TaskResult_TASK_RESULT_FAILED:
 		if err := s.handleFailure(job, req.GetError(), now); err != nil {
@@ -162,6 +169,13 @@ func (s *Server) handleFailure(job *distschedv1.Job, errMsg string, now time.Tim
 		return nil
 	}
 
+	// Retries exhausted. A cron job re-arms for its next occurrence instead of
+	// dead-lettering, so a single bad run does not stop the schedule.
+	if s.maybeRescheduleCron(job, now) {
+		s.log.Warn("cron occurrence failed; rescheduled", "job_id", job.GetId(), "error", errMsg)
+		return nil
+	}
+
 	job.State = distschedv1.JobState_JOB_STATE_FAILED
 	job.FinishedAt = timestamppb.New(now)
 	// Write the dead-letter index entry before committing the terminal state, so
@@ -175,6 +189,9 @@ func (s *Server) handleFailure(job *distschedv1.Job, errMsg string, now time.Tim
 	}
 	s.log.Warn("job dead-lettered",
 		"job_id", job.GetId(), "attempts", job.GetAttempt(), "error", errMsg)
+	// A dead-lettered job's dependents can never run.
+	s.removeFromIndex(job.GetId())
+	s.cancelCascade(job.GetId(), "upstream dependency "+job.GetId()+" did not succeed")
 	return nil
 }
 

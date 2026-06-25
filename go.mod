@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/google/uuid v1.6.0
+	github.com/robfig/cron/v3 v3.0.1
 	go.etcd.io/bbolt v1.5.0
 	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.11
