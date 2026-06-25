@@ -209,11 +209,14 @@ func (a *Agent) currentWorkerID() string {
 	return a.workerID
 }
 
-// register registers with the currently connected leader.
+// register registers with the currently connected leader. It reuses any
+// previously assigned worker ID so a worker keeps one identity across leader
+// failovers and re-registrations (rather than accumulating stale entries).
 func (a *Agent) register(ctx context.Context) error {
 	client := a.workerClient()
 	resp, err := client.RegisterWorker(ctx, &distschedv1.RegisterWorkerRequest{
 		Worker: &distschedv1.WorkerInfo{
+			Id:       a.currentWorkerID(),
 			Address:  a.cfg.Advertise,
 			Capacity: a.cfg.Capacity,
 			Labels:   a.cfg.Labels,

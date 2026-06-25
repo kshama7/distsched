@@ -5,20 +5,21 @@ infrastructure systems: concurrency, gRPC networking, leader election, state
 replication, and recovery from process and node failure.
 
 [![ci](https://github.com/kshama7/distsched/actions/workflows/ci.yml/badge.svg)](https://github.com/kshama7/distsched/actions/workflows/ci.yml)
+[![deploy-validate](https://github.com/kshama7/distsched/actions/workflows/deploy-validate.yml/badge.svg)](https://github.com/kshama7/distsched/actions/workflows/deploy-validate.yml)
 
-> **Status: under active construction.** This repo is being built in 8
-> milestones (see [Roadmap](#roadmap)). Each milestone leaves `main` in a
-> runnable, tested state. **Milestones 1–7 are complete**: a cluster of
-> schedulers elects a leader (Raft-style majority vote with term fencing), the
-> leader dispatches tasks to workers that execute them as subprocesses, failures
-> are retried with backoff or dead-lettered, and metadata is replicated to
-> followers so a new leader takes over on failover. A reaper requeues the work of
-> dead workers and expired leases, orphaned jobs are reclaimed on restart, and
-> execution is idempotent at-least-once. Jobs can declare **DAG dependencies**
-> (cycles rejected at submit) and **delayed or recurring cron schedules**.
-> Workers auto-discover and follow the leader. Operability is covered by
-> **Prometheus metrics**, **zap structured logging**, and the **`schedulerctl`
-> CLI**.
+> **Status: feature-complete across all 8 milestones** (see [Roadmap](#roadmap)).
+> A cluster of schedulers elects a leader (Raft-style majority vote with term
+> fencing), the leader dispatches tasks to workers that execute them as
+> subprocesses, failures are retried with backoff or dead-lettered, and metadata
+> is replicated to followers so a new leader takes over on failover. A reaper
+> requeues the work of dead workers and expired leases, orphaned jobs are
+> reclaimed on restart, and execution is idempotent at-least-once. Jobs can
+> declare **DAG dependencies** (cycles rejected at submit) and **delayed or
+> recurring cron schedules**. Workers auto-discover and follow the leader.
+> Operability is covered by **Prometheus metrics**, **zap structured logging**,
+> and the **`schedulerctl` CLI**. A **Docker Compose** cluster and a **chaos
+> script** demonstrate failover; **Kubernetes** manifests are a CI-validated
+> reference. See [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ## What this is
 
@@ -97,8 +98,13 @@ gen/go/distsched/v1/  generated gRPC + message code (committed)
 cmd/scheduler/        scheduler node binary
 cmd/worker/           worker node binary
 cmd/schedulerctl/     operator CLI
-internal/             implementation packages
+internal/             implementation packages (cluster, scheduler, worker,
+                      store, queue, retry, metrics, ctl, logging)
+deploy/compose/       runnable Docker Compose cluster
+deploy/k8s/           Kubernetes reference manifests (CI-validated)
+scripts/chaos.sh      kill-the-leader failover demo
 docs/DESIGN.md        design rationale and tradeoffs
+docs/DEPLOY.md        what runs vs. what is a validated reference
 ```
 
 ## Quickstart
@@ -168,7 +174,7 @@ curl -s localhost:9090/metrics | grep distsched_   # Prometheus metrics
 | 5  | Failure recovery: missed-heartbeat requeue, idempotency, checkpoint | ✅ done |
 | 6  | DAG dependencies + delayed/cron jobs                                | ✅ done |
 | 7  | Observability: Prometheus metrics, structured logs, `schedulerctl`  | ✅ done |
-| 8  | Docker Compose cluster + chaos/failover demo + reference K8s        | ⏳     |
+| 8  | Docker Compose cluster + chaos/failover demo + reference K8s        | ✅ done |
 
 ## License
 

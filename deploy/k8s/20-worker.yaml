@@ -1,0 +1,43 @@
+# Workers are stateless and horizontally scalable. They seed leader discovery
+# with the three stable scheduler DNS names and follow whichever is leader.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: distsched
+  labels:
+    app.kubernetes.io/name: distsched
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: distsched
+        app.kubernetes.io/component: worker
+    spec:
+      terminationGracePeriodSeconds: 35 # allow in-flight tasks to drain
+      containers:
+        - name: worker
+          image: distsched:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - worker
+            - --schedulers
+            - scheduler-0.distsched-scheduler:7070,scheduler-1.distsched-scheduler:7070,scheduler-2.distsched-scheduler:7070
+            - --capacity
+            - "4"
+            - --heartbeat-interval
+            - 2s
+            - --poll-interval
+            - 500ms
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi

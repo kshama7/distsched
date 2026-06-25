@@ -1,0 +1,101 @@
+# Schedulers run as a StatefulSet so each replica has a stable identity
+# (scheduler-0/1/2) and DNS name via the headless service — exactly what
+# lease-based peer election needs. Each gets its own PersistentVolume for BoltDB.
+apiVersion: v1
+kind: Service
+metadata:
+  name: distsched-scheduler
+  namespace: distsched
+  labels:
+    app.kubernetes.io/name: distsched
+    app.kubernetes.io/component: scheduler
+spec:
+  clusterIP: None # headless: gives scheduler-N.distsched-scheduler DNS records
+  selector:
+    app.kubernetes.io/component: scheduler
+  ports:
+    - name: grpc
+      port: 7070
+      targetPort: 7070
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: scheduler
+  namespace: distsched
+  labels:
+    app.kubernetes.io/name: distsched
+    app.kubernetes.io/component: scheduler
+spec:
+  serviceName: distsched-scheduler
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: scheduler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: distsched
+        app.kubernetes.io/component: scheduler
+    spec:
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: scheduler
+          image: distsched:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          command:
+            - scheduler
+            - --node-id
+            - $(POD_NAME)
+            - --listen
+            - :7070
+            - --peers
+            - scheduler-0=scheduler-0.distsched-scheduler:7070,scheduler-1=scheduler-1.distsched-scheduler:7070,scheduler-2=scheduler-2.distsched-scheduler:7070
+            - --data-dir
+            - /data
+            - --metrics-addr
+            - :9090
+          ports:
+            - name: grpc
+              containerPort: 7070
+            - name: metrics
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

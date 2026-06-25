@@ -182,7 +182,11 @@ func cmdStatus(ctx context.Context, c *ctl.Client) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("leader: %s  term: %d\n\n", st.GetLease().GetHolderId(), st.GetLease().GetTerm())
+	holder := st.GetLease().GetHolderId()
+	if holder == "" {
+		holder = "(none)"
+	}
+	fmt.Printf("leader: %s\nterm:   %d\n\n", holder, st.GetLease().GetTerm())
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(w, "SCHEDULER\tADDRESS\tROLE")

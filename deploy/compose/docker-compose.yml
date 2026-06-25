@@ -1,0 +1,70 @@
+# A runnable distsched cluster: 3 schedulers (one leader, two followers via
+# lease-based election), 3 workers that follow the leader, and a Prometheus that
+# scrapes every scheduler. This is the stack the chaos script drives.
+#
+#   docker compose -f deploy/compose/docker-compose.yml up --build
+#   ../../scripts/chaos.sh     # kill the leader, prove failover
+
+x-distsched: &distsched
+  build:
+    context: ../..
+    dockerfile: Dockerfile
+  image: distsched:latest
+  restart: unless-stopped
+  networks: [distsched]
+
+# All three schedulers share this membership list.
+x-peers: &peers "scheduler-a=scheduler-a:7070,scheduler-b=scheduler-b:7070,scheduler-c=scheduler-c:7070"
+
+x-sched-health: &sched-health
+  healthcheck:
+    test: ["CMD", "wget", "-qO-", "http://localhost:9090/healthz"]
+    interval: 5s
+    timeout: 2s
+    retries: 10
+
+services:
+  scheduler-a:
+    <<: [*distsched, *sched-health]
+    command: ["scheduler", "--node-id", "scheduler-a", "--listen", ":7070", "--peers", *peers, "--data-dir", "/data", "--metrics-addr", ":9090"]
+    volumes: ["sched-a-data:/data"]
+    ports: ["7071:7070", "9091:9090"]
+
+  scheduler-b:
+    <<: [*distsched, *sched-health]
+    command: ["scheduler", "--node-id", "scheduler-b", "--listen", ":7070", "--peers", *peers, "--data-dir", "/data", "--metrics-addr", ":9090"]
+    volumes: ["sched-b-data:/data"]
+    ports: ["7072:7070", "9092:9090"]
+
+  scheduler-c:
+    <<: [*distsched, *sched-health]
+    command: ["scheduler", "--node-id", "scheduler-c", "--listen", ":7070", "--peers", *peers, "--data-dir", "/data", "--metrics-addr", ":9090"]
+    volumes: ["sched-c-data:/data"]
+    ports: ["7073:7070", "9093:9090"]
+
+  worker-1: &worker
+    <<: *distsched
+    command: ["worker", "--schedulers", "scheduler-a:7070,scheduler-b:7070,scheduler-c:7070", "--capacity", "4", "--heartbeat-interval", "2s", "--poll-interval", "500ms"]
+    depends_on: [scheduler-a, scheduler-b, scheduler-c]
+
+  worker-2:
+    <<: *worker
+
+  worker-3:
+    <<: *worker
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    networks: [distsched]
+    volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9099:9090"]
+    depends_on: [scheduler-a, scheduler-b, scheduler-c]
+
+networks:
+  distsched: {}
+
+volumes:
+  sched-a-data: {}
+  sched-b-data: {}
+  sched-c-data: {}

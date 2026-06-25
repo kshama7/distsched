@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: distsched-schedulers
+    static_configs:
+      - targets:
+          - scheduler-a:9090
+          - scheduler-b:9090
+          - scheduler-c:9090
+        labels:
+          cluster: distsched

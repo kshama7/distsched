@@ -1,0 +1,38 @@
+name: deploy-validate
+
+# Validates the deployment artifacts so the Kubernetes manifests stay a
+# trustworthy reference (they are not continuously deployed) and the Docker image
+# and Compose stack actually build/parse.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t distsched:ci .
+
+      - name: Validate Compose file
+        run: docker compose -f deploy/compose/docker-compose.yml config -q
+
+  kubernetes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+
+      - name: Validate manifests against Kubernetes schemas
+        run: kubeconform -strict -summary -kubernetes-version 1.30.0 deploy/k8s/

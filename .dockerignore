@@ -1,0 +1,9 @@
+bin/
+data/
+.git/
+.github/
+deploy/
+*.md
+docs/
+.DS_Store
+coverage.out
