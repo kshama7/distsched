@@ -8,9 +8,10 @@ replication, and recovery from process and node failure.
 
 > **Status: under active construction.** This repo is being built in 8
 > milestones (see [Roadmap](#roadmap)). Each milestone leaves `main` in a
-> runnable, tested state. **Milestone 1 (scaffold + API definitions) is
-> complete**; the binaries currently start, report build info, and exit — the
-> live server arrives in Milestone 2.
+> runnable, tested state. **Milestones 1–2 are complete**: the scheduler runs as
+> a live gRPC server with BoltDB persistence and a priority queue, accepts jobs,
+> and tracks workers via registration + heartbeat. Task dispatch and execution
+> arrive in Milestone 3.
 
 ## What this is
 
@@ -97,17 +98,31 @@ pinned plugins (`make tools`).
 
 ```bash
 make build              # compile scheduler, worker, schedulerctl into ./bin
-./bin/scheduler --version
 make test               # go test -race ./...
 make proto              # regenerate code from .proto (only if you edit protos)
 ```
+
+Run a scheduler and a worker locally:
+
+```bash
+# terminal 1 — scheduler with a BoltDB store under ./data
+./bin/scheduler --listen :7070 --data-dir ./data --log-level debug
+
+# terminal 2 — a worker that registers and heartbeats
+./bin/worker --scheduler localhost:7070 --capacity 8 --heartbeat-interval 2s
+```
+
+The scheduler logs worker registration and heartbeats, persists every job to
+BoltDB, and rebuilds its priority queue from that store on restart. Until the
+`schedulerctl` CLI lands (Milestone 7), submit jobs via the `JobService` gRPC
+API (exercised end-to-end in `internal/scheduler/server_test.go`).
 
 ## Roadmap
 
 | #  | Milestone                                                            | Status |
 | -- | ------------------------------------------------------------------- | ------ |
 | 1  | Repo scaffold + proto definitions (Job / Worker / Scheduler)        | ✅ done |
-| 2  | Single scheduler: BoltDB persistence, priority queue, heartbeats    | ⏳     |
+| 2  | Single scheduler: BoltDB persistence, priority queue, heartbeats    | ✅ done |
 | 3  | Multi-worker: assignment, complete/failed, backoff retry, dead-letter | ⏳   |
 | 4  | Multi-scheduler: lease election, metadata replication, failover     | ⏳     |
 | 5  | Failure recovery: missed-heartbeat requeue, idempotency, checkpoint | ⏳     |
