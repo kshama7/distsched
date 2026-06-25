@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package distsched.v1;
+
+option go_package = "github.com/kshama7/distsched/gen/go/distsched/v1;distschedv1";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+// JobState is the lifecycle of a job inside the scheduler.
+//
+//	PENDING   -> submitted; waiting on unmet DAG dependencies or a future schedule.
+//	QUEUED    -> all dependencies satisfied and schedule reached; sitting in the
+//	             priority queue waiting for a worker.
+//	RUNNING   -> leased to a worker and executing.
+//	SUCCEEDED -> terminal; the worker reported success.
+//	FAILED    -> terminal; retries exhausted. The job lands in the dead-letter queue.
+//	CANCELED  -> terminal; canceled by an operator before completion.
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_PENDING = 1;
+  JOB_STATE_QUEUED = 2;
+  JOB_STATE_RUNNING = 3;
+  JOB_STATE_SUCCEEDED = 4;
+  JOB_STATE_FAILED = 5;
+  JOB_STATE_CANCELED = 6;
+}
+
+// WorkerState tracks liveness as observed by the leader scheduler.
+//
+//	ALIVE   -> heartbeats are current.
+//	SUSPECT -> at least one heartbeat interval missed; not yet evicted.
+//	DEAD    -> eviction threshold crossed; in-flight tasks are requeued.
+enum WorkerState {
+  WORKER_STATE_UNSPECIFIED = 0;
+  WORKER_STATE_ALIVE = 1;
+  WORKER_STATE_SUSPECT = 2;
+  WORKER_STATE_DEAD = 3;
+}
+
+// TaskResult is reported by a worker when a leased task finishes.
+enum TaskResult {
+  TASK_RESULT_UNSPECIFIED = 0;
+  TASK_RESULT_SUCCEEDED = 1;
+  TASK_RESULT_FAILED = 2;
+}
+
+// TaskSpec is the concrete unit of work a worker executes. For the demo the
+// worker shells out to `command args...`; richer executors can interpret
+// `payload` instead.
+message TaskSpec {
+  string command = 1;
+  repeated string args = 2;
+  map<string, string> env = 3;
+  google.protobuf.Duration timeout = 4;
+  bytes payload = 5;
+}
+
+// RetryPolicy controls exponential backoff on failure. Effective delay for
+// attempt n (1-indexed) is:
+//
+//	min(max_backoff, initial_backoff * backoff_multiplier^(n-1)) * (1 ± jitter)
+message RetryPolicy {
+  int32 max_attempts = 1;
+  google.protobuf.Duration initial_backoff = 2;
+  google.protobuf.Duration max_backoff = 3;
+  double backoff_multiplier = 4;
+  // jitter is a fraction in [0,1] applied symmetrically to spread retries.
+  double jitter = 5;
+}
+
+// Schedule defers a job to a future time or a recurring cron expression.
+// Exactly one of the fields is set; an unset Schedule means "run immediately".
+message Schedule {
+  oneof kind {
+    // run_at fires the job once at an absolute time.
+    google.protobuf.Timestamp run_at = 1;
+    // cron_expr is a standard 5-field cron expression evaluated in `timezone`.
+    string cron_expr = 2;
+  }
+  // timezone is an IANA name (e.g. "America/New_York"); defaults to UTC.
+  string timezone = 3;
+}

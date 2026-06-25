@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package distsched.v1;
+
+option go_package = "github.com/kshama7/distsched/gen/go/distsched/v1;distschedv1";
+
+import "distsched/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+// Job is the durable unit of scheduling. It is persisted in BoltDB and
+// replicated from the leader to followers.
+message Job {
+  string id = 1;
+  string name = 2;
+
+  // priority orders the ready queue; higher runs first. Ties break by
+  // created_at (FIFO within a priority band).
+  int32 priority = 3;
+
+  TaskSpec spec = 4;
+
+  // depends_on lists job IDs that must reach SUCCEEDED before this job is
+  // eligible to run (DAG edges). A cycle is rejected at submit time.
+  repeated string depends_on = 5;
+
+  Schedule schedule = 6;
+  RetryPolicy retry_policy = 7;
+
+  JobState state = 8;
+  // attempt is the number of execution attempts started so far.
+  int32 attempt = 9;
+  string assigned_worker_id = 10;
+  // last_error carries the most recent failure message (for the dead-letter view).
+  string last_error = 11;
+
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+  google.protobuf.Timestamp scheduled_at = 14;
+  google.protobuf.Timestamp started_at = 15;
+  google.protobuf.Timestamp finished_at = 16;
+}
+
+message SubmitJobRequest {
+  Job job = 1;
+}
+
+message SubmitJobResponse {
+  string job_id = 1;
+}
+
+message GetJobRequest {
+  string job_id = 1;
+}
+
+message GetJobResponse {
+  Job job = 1;
+}
+
+message ListJobsRequest {
+  // state_filter, when set to a non-UNSPECIFIED value, returns only jobs in
+  // that state.
+  JobState state_filter = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListJobsResponse {
+  repeated Job jobs = 1;
+  string next_page_token = 2;
+}
+
+message CancelJobRequest {
+  string job_id = 1;
+}
+
+message CancelJobResponse {
+  Job job = 1;
+}
+
+// JobService is the client-facing control plane: submit work and inspect it.
+// All calls are served by the current leader; followers return a redirect hint
+// in the gRPC status detail.
+service JobService {
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+  rpc GetJob(GetJobRequest) returns (GetJobResponse);
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+}

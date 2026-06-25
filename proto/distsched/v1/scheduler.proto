@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package distsched.v1;
+
+option go_package = "github.com/kshama7/distsched/gen/go/distsched/v1;distschedv1";
+
+import "distsched/v1/job.proto";
+import "distsched/v1/worker.proto";
+import "google/protobuf/timestamp.proto";
+
+// SchedulerRole is a node's role under the current lease.
+enum SchedulerRole {
+  SCHEDULER_ROLE_UNSPECIFIED = 0;
+  SCHEDULER_ROLE_LEADER = 1;
+  SCHEDULER_ROLE_FOLLOWER = 2;
+}
+
+// SchedulerNode is one scheduler replica in the cluster.
+message SchedulerNode {
+  string id = 1;
+  string address = 2;
+  SchedulerRole role = 3;
+  google.protobuf.Timestamp last_seen = 4;
+}
+
+// LeaseInfo describes the current leadership lease. Leadership is lease-based,
+// not Raft: a single registry row holds (holder_id, term, expires_at) and the
+// holder renews it. See docs/DESIGN.md for the consistency tradeoff.
+message LeaseInfo {
+  string holder_id = 1;
+  // term increments on every successful acquisition; it fences stale leaders.
+  int64 term = 2;
+  google.protobuf.Timestamp acquired_at = 3;
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+message GetClusterStatusRequest {}
+
+message GetClusterStatusResponse {
+  LeaseInfo lease = 1;
+  repeated SchedulerNode schedulers = 2;
+  repeated WorkerInfo workers = 3;
+}
+
+// ReplicationEntry is one state mutation in the leader's replication log.
+message ReplicationEntry {
+  int64 seq = 1;
+  oneof mutation {
+    Job upsert_job = 2;
+    WorkerInfo upsert_worker = 3;
+    string delete_job_id = 4;
+  }
+}
+
+message ReplicateRequest {
+  string leader_id = 1;
+  int64 term = 2;
+  repeated ReplicationEntry entries = 3;
+}
+
+message ReplicateResponse {
+  // ok=false with current_term set means the caller is a stale leader and must
+  // step down.
+  bool ok = 1;
+  int64 current_term = 2;
+  // applied_through is the highest seq the follower has durably applied.
+  int64 applied_through = 3;
+}
+
+// SchedulerService is the scheduler<->scheduler cluster plane:
+//   - GetClusterStatus powers `schedulerctl status` and is served by any node.
+//   - Replicate ships the leader's committed mutations to followers so a
+//     follower can take over with warm state on failover (Milestone 4).
+service SchedulerService {
+  rpc GetClusterStatus(GetClusterStatusRequest) returns (GetClusterStatusResponse);
+  rpc Replicate(ReplicateRequest) returns (ReplicateResponse);
+}

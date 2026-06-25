@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package distsched.v1;
+
+option go_package = "github.com/kshama7/distsched/gen/go/distsched/v1;distschedv1";
+
+import "distsched/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+// WorkerInfo is the leader's view of a registered worker.
+message WorkerInfo {
+  string id = 1;
+  // address is informational (host:port the worker advertises).
+  string address = 2;
+  // capacity is the max number of concurrently leased tasks.
+  int32 capacity = 3;
+  map<string, string> labels = 4;
+  WorkerState state = 5;
+  google.protobuf.Timestamp last_heartbeat = 6;
+  int32 running_tasks = 7;
+}
+
+// TaskAssignment is a single leased attempt handed to a worker. task_id is
+// unique per attempt and is the idempotency key the worker echoes back, so a
+// duplicate delivery after a requeue is detectable.
+message TaskAssignment {
+  string task_id = 1;
+  string job_id = 2;
+  int32 attempt = 3;
+  TaskSpec spec = 4;
+  // lease_deadline is when the leader will consider this attempt lost and
+  // eligible for requeue if no terminal report arrives.
+  google.protobuf.Timestamp lease_deadline = 5;
+}
+
+message RegisterWorkerRequest {
+  WorkerInfo worker = 1;
+}
+
+message RegisterWorkerResponse {
+  string worker_id = 1;
+  // leader_address lets a worker that hit a follower reconnect to the leader.
+  string leader_address = 2;
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+  // running_task_ids is the worker's current in-flight set, used to reconcile
+  // leases after a scheduler failover.
+  repeated string running_task_ids = 2;
+}
+
+message HeartbeatResponse {
+  bool ok = 1;
+  // If the contacted node is not the leader, ok=false and leader_address points
+  // at the current leader.
+  string leader_address = 2;
+}
+
+message PollTaskRequest {
+  string worker_id = 1;
+  int32 max_tasks = 2;
+}
+
+message PollTaskResponse {
+  repeated TaskAssignment tasks = 1;
+}
+
+message ReportTaskRequest {
+  string worker_id = 1;
+  string task_id = 2;
+  TaskResult result = 3;
+  string output = 4;
+  string error = 5;
+}
+
+message ReportTaskResponse {
+  bool ack = 1;
+}
+
+// WorkerService is the worker<->scheduler data plane. The worker is the client
+// and pulls work (PollTask) so the design is NAT-friendly and needs no
+// worker-side server. The scheduler tracks liveness via Heartbeat.
+service WorkerService {
+  rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc PollTask(PollTaskRequest) returns (PollTaskResponse);
+  rpc ReportTask(ReportTaskRequest) returns (ReportTaskResponse);
+}

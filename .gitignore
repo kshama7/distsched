@@ -1,0 +1,16 @@
+# Build artifacts
+/bin/
+
+# Runtime data (BoltDB stores, scratch dirs)
+/data/
+*.db
+*.bolt
+
+# Test / coverage output
+coverage.out
+*.test
+
+# Editor / OS cruft
+.DS_Store
+.idea/
+*.swp
